@@ -53,10 +53,12 @@ class GLWidget(QtOpenGL.QGLWidget):
     def buildShaders(self):
         vertex = shaders.compileShader("""#version 120
             varying vec4 vertex_color;
+            attribute vec3 Position;
+            attribute vec3 Color;
             uniform mat4 ProjectionMatrix;  // equal to gl_ProjectionMatrix
             void main() {
-                gl_Position = ProjectionMatrix * (gl_ModelViewMatrix * gl_Vertex);
-                vertex_color = gl_Color;
+                gl_Position = ProjectionMatrix * (gl_ModelViewMatrix * vec4(Position, 1.0));
+                vertex_color = vec4(Color, 1.0);
             }""",GL_VERTEX_SHADER)
 
         fragment = shaders.compileShader("""#version 120
@@ -67,7 +69,8 @@ class GLWidget(QtOpenGL.QGLWidget):
 
         self.shader = shaders.compileProgram(vertex,fragment)
         self.uni_projection = glGetUniformLocation(self.shader, 'ProjectionMatrix')
-
+        self.attri_position = glGetAttribLocation(self.shader, 'Position')
+        self.attri_color = glGetAttribLocation(self.shader, 'Color')
         shaders.glUseProgram(self.shader)
 
 
@@ -96,17 +99,30 @@ class GLWidget(QtOpenGL.QGLWidget):
         glTranslate(-0.5, -0.5, -0.5)
 
         glUniformMatrix4fv(self.uni_projection, 1, GL_TRUE, self.proj_mat)
+        self.cubeVtxVBO.bind()
+        # -> gl_Vertex
+        glVertexAttribPointer(self.attri_position,
+                              3,
+                              GL_FLOAT,
+                              GL_FALSE,
+                              3*4,
+                              None)
+        glEnableVertexAttribArray(self.attri_position)
+        # -> gl_Color
+        glVertexAttribPointer(self.attri_color,
+                              3,
+                              GL_FLOAT,
+                              GL_FALSE,
+                              3*4,
+                              None)
+        glEnableVertexAttribArray(self.attri_color)
 
-
-        glEnableClientState(GL_VERTEX_ARRAY)
-        glEnableClientState(GL_COLOR_ARRAY)
-        glVertexPointerf(self.cubeVtxArray)     # -> gl_Vertex
-        glColorPointerf(self.cubeClrArray)      # -> gl_Color
         glDrawElementsui(GL_QUADS, self.cubeIdxArray)
 
+        self.cubeVtxVBO.unbind()
 
     def initGeometry(self):
-        self.cubeVtxArray = array(
+        self.cubeVtxVBO = VBO(array(
                 [[0.0, 0.0, 0.0],
                  [1.0, 0.0, 0.0],
                  [1.0, 1.0, 0.0],
@@ -114,7 +130,7 @@ class GLWidget(QtOpenGL.QGLWidget):
                  [0.0, 0.0, 1.0],
                  [1.0, 0.0, 1.0],
                  [1.0, 1.0, 1.0],
-                 [0.0, 1.0, 1.0]])
+                 [0.0, 1.0, 1.0]],'f'), GL_STATIC_DRAW, GL_ARRAY_BUFFER)
         self.cubeIdxArray = [
                 0, 1, 2, 3,
                 3, 2, 6, 7,
