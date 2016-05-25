@@ -14,6 +14,8 @@ from OpenGL.arrays.vbo import VBO
 import numpy as np
 
 def calcProjection(l, r, b, t, n, f):
+    """ This creates a Projection matrix given 6 frustum
+        params (l, r, b, t, n, f) for glFrustum()"""
     proj_matrix = np.identity(4)
     proj_matrix[0,0] = 2 * n / (r - l)
     proj_matrix[0,2] = (r + l) / (r - l)
@@ -26,12 +28,11 @@ def calcProjection(l, r, b, t, n, f):
     return proj_matrix
 
 def calcFrustum(fovY, aspectRatio, front, back):
-    """ This creates a symmetric frustum.
-        It converts to 6 params (l, r, b, t, n, f) for glFrustum()
-        from given 4 params (fovy, aspect, near, far)"""
-    DEG2RAD = 3.14159265 / 180
+    """ This creates a symmetric frustum. Given 4 params (fovy, aspect, near, far)
+        it gives 6 params (l, r, b, t, n, f) for glFrustum()"""
+    DEG2RAD = np.pi / 180
 
-    tangent = tan(fovY/2 * DEG2RAD)   # tangent of half fovY
+    tangent = tan(fovY/2.0 * DEG2RAD)   # tangent of half fovY
     height = front * tangent          # half height of near plane
     width = height * aspectRatio      # half width of near plane
 
@@ -52,9 +53,9 @@ class GLWidget(QtOpenGL.QGLWidget):
     def buildShaders(self):
         vertex = shaders.compileShader("""#version 120
             varying vec4 vertex_color;
-            uniform mat4 ProjectionMatrix;
+            uniform mat4 ProjectionMatrix;  // equal to gl_ProjectionMatrix
             void main() {
-                gl_Position = ProjectionMatrix * gl_ModelViewMatrix * gl_Vertex;
+                gl_Position = ProjectionMatrix * (gl_ModelViewMatrix * gl_Vertex);
                 vertex_color = gl_Color;
             }""",GL_VERTEX_SHADER)
 
@@ -96,11 +97,13 @@ class GLWidget(QtOpenGL.QGLWidget):
 
         glUniformMatrix4fv(self.uni_projection, 1, GL_TRUE, self.proj_mat)
 
+
         glEnableClientState(GL_VERTEX_ARRAY)
         glEnableClientState(GL_COLOR_ARRAY)
-        glVertexPointerf(self.cubeVtxArray)
-        glColorPointerf(self.cubeClrArray)
+        glVertexPointerf(self.cubeVtxArray)     # -> gl_Vertex
+        glColorPointerf(self.cubeClrArray)      # -> gl_Color
         glDrawElementsui(GL_QUADS, self.cubeIdxArray)
+
 
     def initGeometry(self):
         self.cubeVtxArray = array(
