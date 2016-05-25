@@ -6,12 +6,11 @@ Created on Wed May 25 17:36:17 2016
 @author: kaihong
 """
 import sys
-from PyQt4 import QtCore
-from PyQt4 import QtGui
-from PyQt4 import QtOpenGL
+from PyQt4 import QtCore,QtGui,QtOpenGL
 from OpenGL import GLU
 from OpenGL.GL import *
-from numpy import array
+from OpenGL.GL import shaders
+from OpenGL.arrays.vbo import VBO
 import numpy as np
 
 def calcProjection(l, r, b, t, n, f):
@@ -50,9 +49,27 @@ class GLWidget(QtOpenGL.QGLWidget):
         QtOpenGL.QGLWidget.__init__(self, parent)
         self.yRotDeg = 0.0
 
+    def buildShaders(self):
+        vertex = shaders.compileShader("""#version 120
+            varying vec4 vertex_color;
+            void main() {
+                gl_Position = gl_ModelViewProjectionMatrix * gl_Vertex;
+                vertex_color = gl_Color;
+            }""",GL_VERTEX_SHADER)
+        fragment = shaders.compileShader("""#version 120
+            varying vec4 vertex_color;
+            void main() {
+                gl_FragColor = vertex_color;
+            }""",GL_FRAGMENT_SHADER)
+        self.shader = shaders.compileProgram(vertex,fragment)
+
+        shaders.glUseProgram(self.shader)
+
+
     def initializeGL(self):
         self.qglClearColor(QtGui.QColor(0, 0,  150))
         self.initGeometry()
+        self.buildShaders()
 
         glEnable(GL_DEPTH_TEST)
 
