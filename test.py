@@ -36,10 +36,10 @@ def calcFrustum(fovY, aspectRatio, front, back):
     width = height * aspectRatio      # half width of near plane
 
     # params: left, right, bottom, top, near, far
-    glMatrixMode(GL_PROJECTION)
-    glLoadIdentity()
-    glFrustum(-width, width, -height, height, front, back)
-    glMatrixMode(GL_MODELVIEW)
+#    glMatrixMode(GL_PROJECTION)
+#    glLoadIdentity()
+#    glFrustum(-width, width, -height, height, front, back)
+#    glMatrixMode(GL_MODELVIEW)
 
     return calcProjection(-width, width, -height, height, front, back)
 
@@ -52,16 +52,20 @@ class GLWidget(QtOpenGL.QGLWidget):
     def buildShaders(self):
         vertex = shaders.compileShader("""#version 120
             varying vec4 vertex_color;
+            uniform mat4 ProjectionMatrix;
             void main() {
-                gl_Position = gl_ModelViewProjectionMatrix * gl_Vertex;
+                gl_Position = ProjectionMatrix * gl_ModelViewMatrix * gl_Vertex;
                 vertex_color = gl_Color;
             }""",GL_VERTEX_SHADER)
+
         fragment = shaders.compileShader("""#version 120
             varying vec4 vertex_color;
             void main() {
                 gl_FragColor = vertex_color;
             }""",GL_FRAGMENT_SHADER)
+
         self.shader = shaders.compileProgram(vertex,fragment)
+        self.uni_projection = glGetUniformLocation(self.shader, 'ProjectionMatrix')
 
         shaders.glUseProgram(self.shader)
 
@@ -89,6 +93,8 @@ class GLWidget(QtOpenGL.QGLWidget):
         glScale(20.0, 20.0, 20.0)
         glRotate(self.yRotDeg, 0.2, 1.0, 0.3)
         glTranslate(-0.5, -0.5, -0.5)
+
+        glUniformMatrix4fv(self.uni_projection, 1, GL_TRUE, self.proj_mat)
 
         glEnableClientState(GL_VERTEX_ARRAY)
         glEnableClientState(GL_COLOR_ARRAY)
