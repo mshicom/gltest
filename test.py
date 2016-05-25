@@ -100,13 +100,14 @@ class GLWidget(QtOpenGL.QGLWidget):
 
         glUniformMatrix4fv(self.uni_projection, 1, GL_TRUE, self.proj_mat)
         self.cubeVtxVBO.bind()
+        self.cubeIdxBO.bind()
         # -> gl_Vertex
         glVertexAttribPointer(self.attri_position,
                               3,
                               GL_FLOAT,
                               GL_FALSE,
                               3*4,
-                              None)
+                              self.cubeVtxVBO)
         glEnableVertexAttribArray(self.attri_position)
         # -> gl_Color
         glVertexAttribPointer(self.attri_color,
@@ -114,12 +115,13 @@ class GLWidget(QtOpenGL.QGLWidget):
                               GL_FLOAT,
                               GL_FALSE,
                               3*4,
-                              None)
+                              self.cubeVtxVBO)
         glEnableVertexAttribArray(self.attri_color)
 
-        glDrawElementsui(GL_QUADS, self.cubeIdxArray)
+        glDrawElements(GL_QUADS, self.cubeIdxBO.size, GL_UNSIGNED_SHORT, None)
 
         self.cubeVtxVBO.unbind()
+        self.cubeIdxBO.unbind()
 
     def initGeometry(self):
         self.cubeVtxVBO = VBO(array(
@@ -131,13 +133,13 @@ class GLWidget(QtOpenGL.QGLWidget):
                  [1.0, 0.0, 1.0],
                  [1.0, 1.0, 1.0],
                  [0.0, 1.0, 1.0]],'f'), GL_STATIC_DRAW, GL_ARRAY_BUFFER)
-        self.cubeIdxArray = [
-                0, 1, 2, 3,
-                3, 2, 6, 7,
-                1, 0, 4, 5,
-                2, 1, 5, 6,
-                0, 3, 7, 4,
-                7, 6, 5, 4 ]
+        self.cubeIdxBO = VBO(array([
+                [0, 1, 2, 3],
+                [3, 2, 6, 7],
+                [1, 0, 4, 5],
+                [2, 1, 5, 6],
+                [0, 3, 7, 4],
+                [7, 6, 5, 4]],'uint16'), GL_STATIC_DRAW, GL_ELEMENT_ARRAY_BUFFER)
         self.cubeClrArray = [
                 [0.0, 0.0, 0.0],
                 [1.0, 0.0, 0.0],
@@ -164,12 +166,12 @@ class MainWindow(QtGui.QMainWindow):
         self.initActions()
         self.initMenus()
 
-        glWidget = GLWidget(self)
-        self.setCentralWidget(glWidget)
+        self.glWidget = GLWidget(self)
+        self.setCentralWidget(self.glWidget)
 
         timer = QtCore.QTimer(self)
         timer.setInterval(20)
-        QtCore.QObject.connect(timer, QtCore.SIGNAL('timeout()'), glWidget.spin)
+        QtCore.QObject.connect(timer, QtCore.SIGNAL('timeout()'), self.glWidget.spin)
         timer.start()
 
 
