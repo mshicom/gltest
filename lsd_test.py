@@ -105,48 +105,19 @@ class GLWidget(QtOpenGL.QGLWidget):
         self.model_matrix = np.identity(4,'f')
         self.proj_matrix = camera.calcFrustum(60, 6.4/4.8, 0.9, 20)
 
-    def buildShaders(self):
-#        vertex = shaders.compileShader("""#version 430 core
-#            layout (location = 0) in vec3 position;
-#            layout (location = 4) in vec2 tc;
-#            uniform mat4 model;
-#            uniform mat4 view;
-#            uniform mat4 projection;
-#            out VS_OUT {
-#                vec2 tc;
-#            } vs_out;
-#            void main(void)
-#            {
-#                vs_out.tc = tc;
-#                gl_Position = projection*(view*(model*vec4(position,1)));
-#            }""",GL_VERTEX_SHADER)
-#
-#        fragment = shaders.compileShader("""#version 430 core
-#            layout (binding = 0) uniform sampler2D tex_object;
-#
-#            in VS_OUT {
-#                vec2 tc;
-#            } fs_in;
-#
-#            out vec4 color;
-#            void main(void)
-#            {
-#                color.rgb = vec3( texture(tex_object, fs_in.tc).r);
-#            }""",GL_FRAGMENT_SHADER)
-#
-#        self.shader = shaders.compileProgram(vertex,fragment)
-#        self.attri_tc = 4
-#
-#        self.model_loc = glGetUniformLocation(self.shader, "model")
-#        self.proj_loc = glGetUniformLocation(self.shader, "projection")
-#        self.view_loc = glGetUniformLocation(self.shader, "view")
+    def initQuery(self):
+        pass
+
+    def initProgram(self):
         vertex = shaders.compileShader("""#version 430 core
-            layout (location = 0) in vec3 position;
+            layout (location = 0) in vec2 position;
             layout (location = 4) in float color;
             uniform mat4 model;
             uniform mat4 view;
             uniform mat4 projection;
-            uniform mat4 pTe,projection_pro;
+            uniform vec4 K;
+            uniform vec3 T;
+            uniform mat3 R;
             layout (binding = 0) uniform sampler2D tex_object;
             out VS_OUT {
                 float c;
@@ -155,12 +126,6 @@ class GLWidget(QtOpenGL.QGLWidget):
             {
                 vec4 pos_eye = model*vec4(position,1);
                 gl_Position = projection*(view*pos_eye);
-                vec4 pos_proj =  projection_pro*pTe*pos_eye;
-                vec2 tc = pos_proj.rg / pos_proj.b;
-                if(tc.r>-1 && tc.r<1 && tc.g>-1 && tc.g<1)
-                    vs_out.c = texture(tex_object, tc).r;
-                else
-                    vs_out.c = 1;
 
             }""",GL_VERTEX_SHADER)
 
@@ -176,18 +141,35 @@ class GLWidget(QtOpenGL.QGLWidget):
             }""",GL_FRAGMENT_SHADER)
 
         self.shader = shaders.compileProgram(vertex,fragment)
-        self.attri_tc = 4
+        self.attri_c = 4
 
         self.model_loc = glGetUniformLocation(self.shader, "model")
         self.proj_loc = glGetUniformLocation(self.shader, "projection")
         self.view_loc = glGetUniformLocation(self.shader, "view")
-        self.projection_pro_loc = glGetUniformLocation(self.shader, "projection_pro")
-        self.pTe_loc = glGetUniformLocation(self.shader, "pTe")
+        self.K_loc = glGetUniformLocation(self.shader, "K")
+        self.R_loc = glGetUniformLocation(self.shader, "R")
+        self.T_loc = glGetUniformLocation(self.shader, "T")
 
-        #tex_data = (plt.imread('/home/kaihong/workspace/0.png')*255).astype('uint8')
-        tex_data = frames[1]
-        if not np.can_cast(tex_data.dtype, 'uint8'):
-            raise ValueError("texture data should be of type uint8")
+    def initBuffer(self):
+        data = np.array([u,v,color],'f')
+        self.data = VBO(data, GL_STATIC_DRAW, GL_ARRAY_BUFFER)
+
+        """ (optional) setup VAO configuration Macro"""
+        self.vao = glGenVertexArrays(1)
+        glBindVertexArray(self.vao)
+        self.data.bind()
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 12, self.data)
+        glEnableVertexAttribArray(0)
+
+        glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, 12, self.data+8)
+        glEnableVertexAttribArray(4)
+        glBindBuffer(GL_ARRAY_BUFFER, 0)
+        glBindVertexArray(0)
+
+    def initTexture(self):
+        tex_data = Icur
+        if not np.can_cast(tex_data.dtype, 'f'):
+            raise ValueError("texture data should be of type float32")
 
         h,w = tex_data.shape[:2]
         self.tex = glGenTextures(1)
@@ -196,51 +178,25 @@ class GLWidget(QtOpenGL.QGLWidget):
         glTexImage2D(GL_TEXTURE_2D, 0,
                         GL_RED,
                         w, h,
-                        0,GL_RED,GL_UNSIGNED_BYTE,
+                        0,GL_RED,GL_FLOAT,
                         tex_data)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
 
-
     def initializeGL(self):
-        self.qglClearColor(QtGui.QColor(0, 0,  0))
-        self.initGeometry()
-        self.buildShaders()
 
+        self.initQuery()
+        self.initProgram()
+        self.initBuffer()
+        self.initTexture()
+
+        glClearColor((0, 0, 0))
         glEnable(GL_DEPTH_TEST)
 
     def resizeGL(self, width, height):
         if height == 0: height = 1
         glViewport(0, 0, width, height)
-#        self.camera.setViewportDimensions(width, height)
 
-
-#    def paintGL(self):
-#        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-#
-#        try:
-#            self.quad.bind()
-#            glUseProgram(self.shader)
-#
-#            glUniformMatrix4fv(self.model_loc, 1, GL_TRUE, self.model_matrix)
-#            glUniformMatrix4fv(self.proj_loc, 1, GL_TRUE, self.proj_matrix)
-#            glUniformMatrix4fv(self.view_loc, 1, GL_TRUE, self.view_matrix)
-#
-#            glActiveTexture(GL_TEXTURE0)
-#            glBindTexture(GL_TEXTURE_2D, self.tex)
-#
-#            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 20, self.quad)
-#            glEnableVertexAttribArray(0)
-#            glVertexAttribPointer(4, 2, GL_FLOAT, GL_FALSE, 20, self.quad+12)
-#            glEnableVertexAttribArray(4)
-#
-#            glDrawArrays(GL_QUADS,0, 4)
-#
-#            glDisableVertexAttribArray(0)
-#            glDisableVertexAttribArray(4)
-#        finally:
-#            self.quad.unbind()
-#            glUseProgram(0)
     def paintGL(self):
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
@@ -253,7 +209,7 @@ class GLWidget(QtOpenGL.QGLWidget):
             glUniformMatrix4fv(self.view_loc, 1, GL_TRUE, self.view_matrix)
 
             glUniformMatrix4fv(self.projection_pro_loc, 1, GL_TRUE, self.proj_matrix)
-#            glUniformMatrix4fv(self.pTe_loc, 1, GL_TRUE, np.dot(np.linalg.inv(G[1]), G[0]))
+            glUniformMatrix4fv(self.pTe_loc, 1, GL_TRUE, np.dot(np.linalg.inv(G[1]), G[0]))
             glUniformMatrix4fv(self.pTe_loc, 1, GL_TRUE,
                                camera.lookAt(np.array([-1,0,0]),
                                              np.array([0,0,0]),
@@ -271,24 +227,7 @@ class GLWidget(QtOpenGL.QGLWidget):
             self.I.unbind()
             glUseProgram(0)
 
-    def initGeometry(self):
-        self.quad = VBO(np.array([[-1,-1, 0, 0, 1],
-                                  [ 1,-1, 0, 1, 1],
-                                  [ 1, 1, 0, 1, 0],
-                                  [-1, 1, 0, 0, 0]],'f'), GL_STATIC_DRAW, GL_ARRAY_BUFFER)
-        self.p = VBO(P, GL_STATIC_DRAW, GL_ARRAY_BUFFER)
-        self.I = VBO(I, GL_STATIC_DRAW, GL_ARRAY_BUFFER)
-        """ (optional) setup VAO configuration Macro"""
-        self.vao = glGenVertexArrays(1)
-        glBindVertexArray(self.vao)
-        self.p.bind()
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, self.p)
-        glEnableVertexAttribArray(0)
-        self.I.bind()
-        glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, 0, self.I)
-        glEnableVertexAttribArray(4)
-        glBindBuffer(GL_ARRAY_BUFFER, 0)
-        glBindVertexArray(0)
+
 
 
     def spin(self):
@@ -378,9 +317,8 @@ if __name__ == "__main__":
     plt.close('all')
     fx,fy,cx,cy = K[0,0],K[1,1],K[0,2],K[1,2]
     refid, curid = 0,2
-    Iref, G0, Z = frames[refid]/255.0, wGc[refid], wGc[refid]
-    Icur, G1  = frames[curid]/255.0, wGc[curid]
-    Ki = np.linalg.inv(K)
+    Iref, G0, Z = frames[refid].astype('f')/255.0, wGc[refid].astype('f'), Z[refid].astype('f')
+    Icur, G1  = frames[curid].astype('f')/255.0, wGc[curid].astype('f')
     cGr = np.dot(np.linalg.inv(G1), G0)
     R, T = cGr[0:3,0:3], cGr[0:3,3]
 
@@ -390,16 +328,30 @@ if __name__ == "__main__":
     u,v = np.where(valid_mask)
     color = dI[valid_mask]
 
-    f,a = plt.subplots(1,1,num='epiline')
-    a.imshow(sim(Icur,Iref))
-    p = np.round(plt.ginput(1, timeout=-1)[0]).reshape(-1,1)
-    a.plot(p[0], p[1],'*')
-    ld = np.array( [-fx*T[0] + T[2]*(p[0]-cx),
-                    -fy*T[1] + T[2]*(p[1]-cy)])
-    ep = np.linspace(0,1,20)*ld+p
-    a.plot(ep[0]+640,ep[1],'.')
-    a.plot([T[0]/T[2]*fx+640,p[0]+640],
-           [T[1]/T[2]*fy,p[1]],'r-')
+    dy,dx = np.gradient(Icur)
+    dIc = np.sqrt(dx**2+dy**2).astype('f')
+
+    def sample(x,y):
+        return scipy.ndimage.map_coordinates(dIc, (y,x), order=1, cval=np.nan)
+
+    for px,py,c in zip(u,v,color):
+        '''calc epi line'''
+        ld = np.array( [-fx*T[0] + T[2]*(px-cx),
+                        -fy*T[1] + T[2]*(py-cy)])
+
+
+    #%% epipolar line test
+    if 0:
+        f,a = plt.subplots(1,1,num='epiline')
+        a.imshow(sim(Icur,Iref))
+        p = np.round(plt.ginput(1, timeout=-1)[0]).reshape(-1,1)
+        a.plot(p[0], p[1],'*')
+        ld = np.array( [-fx*T[0] + T[2]*(p[0]-cx),
+                        -fy*T[1] + T[2]*(p[1]-cy)])
+        ep = np.linspace(0,1,20)*ld+p
+        a.plot(ep[0]+640,ep[1],'.')
+        a.plot([T[0]/T[2]*fx+640,p[0]+640],
+               [T[1]/T[2]*fy,p[1]],'r-')
 
 #    app_created = False
 #    app = QtCore.QCoreApplication.instance()
