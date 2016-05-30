@@ -26,6 +26,7 @@ def loaddata1():
     frames, = data['I']
     G, = data['G']
     K = data['K']
+#    K[1,1]*=-1
     Z, = data['Z']/100.0
     return frames, G, K, Z
 
@@ -312,12 +313,12 @@ class MainWindow(QtGui.QMainWindow):
 
 if __name__ == "__main__":
     if 'frames' not in globals() or 1:
-        frames, wGc, K, Z = loaddata1()
+        frames, wGc, K, Zs = loaddata1()
         imheight,imwidth = frames[0].shape[:2]
-    plt.close('all')
+
     fx,fy,cx,cy = K[0,0],K[1,1],K[0,2],K[1,2]
-    refid, curid = 0,2
-    Iref, G0, Z = frames[refid].astype('f')/255.0, wGc[refid].astype('f'), Z[refid].astype('f')
+    refid, curid = 0,8
+    Iref, G0, Z = frames[refid].astype('f')/255.0, wGc[refid].astype('f'), Zs[refid].astype('f')
     Icur, G1  = frames[curid].astype('f')/255.0, wGc[curid].astype('f')
     cGr = np.dot(np.linalg.inv(G1), G0)
     R, T = cGr[0:3,0:3], cGr[0:3,3]
@@ -339,19 +340,61 @@ if __name__ == "__main__":
         ld = np.array( [-fx*T[0] + T[2]*(px-cx),
                         -fy*T[1] + T[2]*(py-cy)])
 
+    """ Divides P by the last row and removes the row."""
+    def metric(P): return P[:-1]/P[-1]
 
+    """ Adds a row of ones to P."""
+    def homogeneous(P):
+        return np.lib.pad(P, ((0,1),(0,0)), mode='constant', constant_values=1)
     #%% epipolar line test
-    if 0:
+    if 1:
+        plt.close('all')
         f,a = plt.subplots(1,1,num='epiline')
-        a.imshow(sim(Icur,Iref))
+        a.imshow(sim(Iref,Icur))
+        '''pick a target point in the left image(reference)'''
         p = np.round(plt.ginput(1, timeout=-1)[0]).reshape(-1,1)
         a.plot(p[0], p[1],'*')
-        ld = np.array( [-fx*T[0] + T[2]*(p[0]-cx),
-                        -fy*T[1] + T[2]*(p[1]-cy)])
-        ep = np.linspace(0,1,20)*ld+p
-        a.plot(ep[0]+640,ep[1],'.')
-        a.plot([T[0]/T[2]*fx+640,p[0]+640],
-               [T[1]/T[2]*fy,p[1]],'r-')
+
+        cGr = np.dot(np.linalg.inv(wGc[curid]), wGc[refid])
+#        cGr = np.linalg.inv(cGr)
+        Rcr, Tcr = cGr[0:3,0:3], cGr[0:3,3].reshape(-1,1)
+
+        ''' Tcr is the negative position of R in C coord, project it to the C image.
+            It corresponds to 0 depth.Inf point will have 0 in its 4th coordinate,
+            which means only affected by Rotation. More details see
+            "Comments on 'Consistent Depth Maps Recovery from a Video Sequence'"
+             http://www.cs.uu.nl/research/techreps/repo/CS-2011/2011-014.pdf
+        '''
+        min_idepth, max_idepth = 0.0, np.inf
+        Pc0   = K.dot(Tcr)
+        Pinf = K.dot(Rcr.dot(np.linalg.inv(K).dot(homogeneous(p))))
+
+        Pt = metric(K.dot(Rcr.dot(np.linalg.inv(K).dot(homogeneous(p)*9.38))+Tcr))
+
+        a0 = (0.01 - Pinf[2])/Pc0[2]      # Pinf[2] + λ*Pc[2] > 0
+        a1 = (Pinf[0]-640*Pinf[2])/(640*Pc0[2]-Pc0[0])
+        a2 = (Pinf[1]-480*Pinf[2])/(480*Pc0[2]-Pc0[1])
+        max_idepth = np.min([a0, a1, a2])
+        Pc = Pinf + max_idepth*Pc0
+        Pc = metric(Pc)
+
+        if Pinf[2] < 0 and max_idepth < min_idepth:
+            print "Both points are invalid"
+        Pinf = metric(Pinf)
+        print 'max depth %f' % (1/max_idepth)
+        a.plot(Pinf[0]+640, Pinf[1], 'r.')
+
+        a.plot(Pc[0]+640, Pc[1], '*')
+
+        a.plot([Pc[0]+640,Pinf[0]+640],
+               [Pc[1], Pinf[1]],'b-')  # the complete epi line
+
+#        ''' search line on right image (current)'''
+#        ld = np.sign(Tcr[2])*np.array([Tcr[2]*(p[0]-cx) -fx*Tcr[0],
+#                       Tcr[2]*(p[1]-cy) -fy*Tcr[1]])
+#        ep = 50*ld+Pinf#np.linspace(0,1,20)
+#        a.plot([Pinf[0]+640,ep[0]+640],
+#               [Pinf[1],    ep[1]],'r-')
 
 #    app_created = False
 #    app = QtCore.QCoreApplication.instance()
