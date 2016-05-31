@@ -18,7 +18,8 @@ pis = plt.imshow
 pf = plt.figure
 def sim(*arg,**kwarg):
     return np.hstack(arg)
-import scipy.io
+import scipy
+import scipy.ndimage
 #%%
 
 def loaddata1():
@@ -332,7 +333,7 @@ if __name__ == "__main__":
     dy,dx = np.gradient(Icur)
     dIc = np.sqrt(dx**2+dy**2).astype('f')
 
-    def sample(x,y):
+    def sample(dIc,x,y):
         return scipy.ndimage.map_coordinates(dIc, (y,x), order=1, cval=np.nan)
 
     for px,py,c in zip(u,v,color):
@@ -349,8 +350,10 @@ if __name__ == "__main__":
     #%% epipolar line test
     if 1:
         plt.close('all')
-        f,a = plt.subplots(1,1,num='epiline')
-        a.imshow(sim(Iref,Icur))
+        f,(a,b) = plt.subplots(2,1,num='epiline')
+        a.imshow(sim(dI,dIc))
+
+
         '''pick a target point in the left image(reference)'''
         p = np.round(plt.ginput(1, timeout=-1)[0]).reshape(-1,1)
         a.plot(p[0], p[1],'*')
@@ -378,20 +381,32 @@ if __name__ == "__main__":
         Pc = Pinf + max_idepth*Pc0
         Pc = metric(Pc)
 
-        if Pinf[2] < 0 and max_idepth < min_idepth:
+        if Pinf[2] < 0 or max_idepth < min_idepth:
             print "Both points are invalid"
         Pinf = metric(Pinf)
-        print 'max depth %f' % (1/max_idepth)
+        print 'min depth %f' % (1/max_idepth)
         a.plot(Pinf[0]+640, Pinf[1], 'r.')
 
         a.plot(Pc[0]+640, Pc[1], '*')
-
+        ''' search line on right image (current)'''
         a.plot([Pc[0]+640,Pinf[0]+640],
                [Pc[1], Pinf[1]],'b-')  # the complete epi line
 
-#        ''' search line on right image (current)'''
-#        ld = np.sign(Tcr[2])*np.array([Tcr[2]*(p[0]-cx) -fx*Tcr[0],
-#                       Tcr[2]*(p[1]-cy) -fy*Tcr[1]])
+        plt.pause(0.01)
+#%%
+        normalize = lambda x:x/np.linalg.norm(x)
+
+#        ld0 = np.sign(Tcr[2])*np.array([Tcr[2]*(p[0]-cx) -fx*Tcr[0],
+#                                        Tcr[2]*(p[1]-cy) -fy*Tcr[1]])
+        epl_len = np.linalg.norm(Pinf-Pc)
+        dxy = normalize(Pinf-Pc)
+        sample_size = 100
+        sample_pts = np.array([np.linspace(Pinf[0], Pc[0], sample_size),
+                               np.linspace(Pinf[1], Pc[1], sample_size),
+                               np.linspace(0,  max_idepth, sample_size) ])
+        sample_value = sample(dIc, sample_pts[0],sample_pts[1])
+        b.plot(sample_pts[2], sample_value)
+        b.hlines(dI[p[1,0],p[0,0]],0,max_idepth)
 #        ep = 50*ld+Pinf#np.linspace(0,1,20)
 #        a.plot([Pinf[0]+640,ep[0]+640],
 #               [Pinf[1],    ep[1]],'r-')
