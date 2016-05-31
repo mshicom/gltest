@@ -400,127 +400,25 @@ if __name__ == "__main__":
 #                                        Tcr[2]*(p[1]-cy) -fy*Tcr[1]])
         epl_len = np.linalg.norm(Pinf-Pc)
         dxy = normalize(Pinf-Pc)
-        sample_size = np.ceil(max_idepth)
+        sample_size = 100#np.ceil(max_idepth)
         sample_pts = np.array([np.linspace(Pinf[0], Pc[0], sample_size),
                                np.linspace(Pinf[1], Pc[1], sample_size),
                                np.linspace(0,  max_idepth, sample_size) ])
+        a.plot(sample_pts[0]+640, sample_pts[1],'.')
         sample_value = sample(dIc, sample_pts[0],sample_pts[1])
         b.plot(sample_pts[2], sample_value)
-        b.hlines(dI[p[1,0],p[0,0]],0,max_idepth)
 
-#%%
+        target_value = dI[p[1,0], p[0,0]]
+        b.hlines(target_value, 0, max_idepth)
 
-        def Jhomography2(ncols, nrows):
+        verr = np.abs(target_value - sample_value)
+#        b.plot(sample_pts[2], verr)
 
-            imc,imr = np.meshgrid(range(0, ncols), range(0, nrows))
-            c = imc.reshape(-1,1)
-            r = imr.reshape(-1,1)
+        d = 1/sample_pts[2, np.nanargmin(verr)]
+        dtrue = Z[p[1,0],p[0,0]]
+        print "estimated depth %f, ground true %f" % (d, dtrue)
 
-             # Following same scheme as Hartley 8 point method
-            c_mean = np.mean(c)
-            r_mean = np.mean(r)
-            meandist = np.mean(np.sqrt((c-c_mean)**2 + (r-r_mean)**2))
-            scale = 1#np.sqrt(2) / meandist
-            T = np.array([[scale, 0,    -scale*c_mean],
-                          [0,    scale, -scale*r_mean],
-                          [0,    0,      1]])
-            pts = np.dot(T, homogeneous(np.vstack([c.T,r.T])))
-            x = pts[0,:].reshape(-1,1)
-            y = pts[1,:].reshape(-1,1)
 
-            ones = np.ones([ncols*nrows,1])
-            zeros = np.zeros([ncols*nrows,1])
-            Jx = np.hstack([ ones, zeros,  y, x,  x, y, -x**2, -x*y])/scale
-            Jy = np.hstack([ zeros, ones, -x, y, -y, zeros, -x*y, -y**2])/scale
-
-            return Jx,Jy, T
-
-        def warping(im, H, width, height):
-           # pre-generate the point here
-            if not hasattr(warping, "p"):
-                imc, imr = np.meshgrid(range(0, width), range(0, height))
-                warping.p = homogeneous(np.vstack([imc.ravel(), imr.ravel()]))
-
-            nxy = metric(H.dot(warping.p))
-
-            im_m = im.astype(np.float)
-
-            Iw = scipy.ndimage.map_coordinates(im_m, (nxy[1],nxy[0]), order=1, cval=np.nan)
-            Iw.shape = im.shape
-            mask = np.isnan(Iw)
-
-            Iw[mask] = 0
-            return Iw, ~mask
-
-        def HLie(lH):
-            x = np.array([lH[0,2],
-                          lH[1,2],
-                         -lH[1,0],
-                        -3/2*lH[2,2],
-                        lH[0,0] + 1/2*lH[2,2],
-                        lH[1,0] + lH[0,1],
-                        lH[2,0],
-                        lH[2,1]])
-            return x
-
-        def LieH(x):
-            lH = np.array([[1/3*x[3]+x[4],   x[2] + x[5], x[0]],
-                           [        -x[2], 1/3*x[3]-x[4], x[1]],
-                           [        x[6],           x[7],-2/3*x[3]]])
-            return lH
-
-        def HToLie(H):
-            return HLie(scipy.linalg.logm(H))
-
-        def LieToH_(x):
-            if x.size<8:
-                x = np.lib.pad(x, (0,8-x.size), mode='constant', constant_values=0)
-
-            M = LieH(x)
-            H = scipy.linalg.expm(M)
-            return H
-
-        fig, (ax1,ax2) = plt.subplots(1,2,num='align')
-        aim1 = ax1.imshow(Iref)
-        aim2 = ax2.imshow(Iref,cmap='gray')
-
-        nHeight,nWidth = Iref.shape
-        HEst = np.eye(3)
-
-        JyRef, JxRef = np.gradient(Iref)
-
-        Jhx,Jhy,T = Jhomography2(nWidth, nHeight)
-
-        while 1:
-            Iw, Iw_mask = warping(Icur, HEst, nWidth, nHeight)
-            valid = Iw_mask
-            idx, = valid.ravel().nonzero()
-
-            # Combine with homography Jacobian to obtain the full update
-            JyCur, JxCur = np.gradient(Iw)
-            JIx = 0.5*(JxRef+JxCur).ravel()
-            JIy = 0.5*(JyRef+JyCur).ravel()
-
-            Jh = JIx[:, np.newaxis]*Jhx + JIy[:, np.newaxis]*Jhx
-            Jh = Jh[idx,:]
-            ierr = Iref - Iw
-
-            di = ierr[valid].ravel()
-            dx = np.linalg.pinv(Jh).dot(di)
-
-            dH = LieToH_(dx)
-            dH = np.linalg.inv(T).dot(dH).dot(T)  # undo the normalization in the jacobian estimation
-            HEst = np.dot(HEst, dH)
-
-            aim1.set_data((Iref+Iw)/2)
-            aim2.set_data(ierr)
-            plt.pause(0.1)
-            RMS = (di**2).sum()
-            print RMS
-
-            dNormUpdate = np.linalg.norm(dx)
-            if dNormUpdate< 1e-3:
-                break
 
 
 #%%
