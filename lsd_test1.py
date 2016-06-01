@@ -60,37 +60,47 @@ if __name__ == "__main__":
         pcolor.append(color)
 
 #%% calc the base line to be projected to
+    plt.close('all')
     f,(a) = plt.subplots(1,1,num='epiline')
     a.imshow(sim(Iref, Icur))
 
     cGr = np.dot(np.linalg.inv(wGc[curid]), wGc[refid])
     Rcr, Tcr = cGr[0:3,0:3], cGr[0:3,3]
 
-    min_idepth, max_idepth = 0.0, np.inf
-    Pc0  = K.dot(Tcr)
-    Pinf = K.dot(Rcr.dot(np.linalg.inv(K).dot(np.array([cx,cy,1]))))
+    def calcEpl(p):
+        min_idepth, max_idepth = 0.0, np.inf
+        Pc0  = K.dot(Tcr)
+        Pinf = K.dot(Rcr.dot(np.linalg.inv(K).dot(np.array([p[0],p[1],1]))))
 
-    a0 = (0.01 - Pinf[2])/Pc0[2]      # Pinf[2] + λ*Pc[2] > 0
-    a1 = (Pinf[0]-640*Pinf[2])/(640*Pc0[2]-Pc0[0])
-    a2 = (Pinf[1]-480*Pinf[2])/(480*Pc0[2]-Pc0[1])
-    max_idepth = np.min([a0, a1, a2])
-    Pc = Pinf + max_idepth*Pc0
-    if Pinf[2] < 0 or max_idepth < min_idepth:
+        a0 = (0.01 - Pinf[2])/Pc0[2]      # Pinf[2] + λ*Pc[2] > 0.01
+        a1 = (Pinf[0]-640*Pinf[2])/(640*Pc0[2]-Pc0[0])
+        a2 = (Pinf[1]-480*Pinf[2])/(480*Pc0[2]-Pc0[1])
+        max_idepth = a0 # np.min([a0, a1, a2])
+        Pc = Pinf + max_idepth*Pc0
+        if Pinf[2] < 0 or max_idepth < min_idepth:
             print "Both points are invalid"
-    Pc = Pc/Pc[2]
-    Pinf = Pinf/Pinf[2]
+        Pc = Pc/Pc[2]
+        Pinf = Pinf/Pinf[2]
 
-    l = np.cross(Pinf.flat, Pc.flat)
-    l = l/np.linalg.norm(l[:2])
+        l = np.cross(Pinf.flat, Pc.flat)
+        l = l/np.linalg.norm(l[:2])
+        return Pc, Pinf, l, max_idepth
 
+    Pc, Pinf, l, max_idepth = calcEpl([cx,cy])
+
+
+#    dist = np.empty((480,640))
+#    x,y = np.meshgrid(range(640),range(480))
+#    dist.flat = l.dot(np.vstack((x.ravel(),y.ravel(),np.ones(640*480))))
+#    dist_range = np.max(dist)-np.min(dist)
+
+    p = np.round(plt.ginput(1, timeout=-1)[0])
+    Pc1, Pinf1, ld, _ = calcEpl(p)
     a.plot([Pc[0]+640,Pinf[0]+640],
            [Pc[1], Pinf[1]],'b-')  # the complete epi line
+    a.plot(p[0], p[1],'*')
+    dist_p = np.hstack([p,1]).dot(l)
 
-    dist = np.empty((480,640))
-    x,y = np.meshgrid(range(640),range(480))
-    dist.flat = l.dot(np.vstack((x.ravel(),y.ravel(),np.ones(640*480))))
-    dist_range = np.max(dist)-np.min(dist)
-
-
-
-
+    ld0 = np.array([Tcr[2]*(p[0]-cx) -fx*Tcr[0],
+                    Tcr[2]*(p[1]-cy) -fy*Tcr[1]])
+    pi=cv2.linearPolar(Iref,(cx,cy),300,cv2.WARP_FILL_OUTLIERS)
