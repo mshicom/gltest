@@ -27,7 +27,7 @@ if __name__ == "__main__":
     #%% get good pixels
     dI,px,py,pcolor,pvm = [],[],[],[],[]
     for i,im in enumerate([imleft, imright]):
-        d = scipy.ndimage.filters.gaussian_gradient_magnitude(im,1)
+        d = scipy.ndimage.filters.gaussian_gradient_magnitude(im,3)
         d_abs = np.abs(d)
         valid_mask = d_abs>np.percentile(d_abs,70)
         dI.append( d.copy() )
@@ -66,7 +66,7 @@ if __name__ == "__main__":
     from operator import itemgetter
 
     def test_calcPatchScore():
-        x0, y = (786, 25)
+        x0, y = (786, 205)
         score = [calcPatchScore(y, x0, x_can) for x_can in range(2,w-2)]
         plt.subplot(2,1,1)
         plt.plot(score)
@@ -78,15 +78,18 @@ if __name__ == "__main__":
         result, element = min(enumerate(score), key=itemgetter(1))
         plt.vlines(result+2,0,255,'g',linewidths=3)
 
-    f,(a0,a1) = plt.subplots(2,1,num='query')
-    fi, b0 = plt.subplots(1,1,num='i')
-    b0.imshow(imleft)
+
 
 #    x,y,c = px[0][1000], py[0][1000], pcolor[0][1000]
 
     start = 0
     debug = False
-    d_result = np.full_like(imleft, np.inf)
+    d_result = np.full_like(imleft, 0)
+    if debug:
+        f,(a0,a1) = plt.subplots(2,1,num='query')
+        fi, b0 = plt.subplots(1,1,num='i')
+        b0.imshow(imleft)
+
     for x,y,c in zip(px[0][start:], py[0][start:], pcolor[0][start:]):
         if debug:
             pf(fi.number)
@@ -104,13 +107,13 @@ if __name__ == "__main__":
             a1.vlines(x,0,255,'r')
         min_score = np.inf
         '''consider all points in neighbouring gradient-level as candiates'''
-        for offset in [0,1,-1,2,-2,3,-3]:
+        for offset in [0,1,-1,2,-2]:
             plist = data[y][np.clip(c+offset, 0, scale)]
             for cp_x in plist:
 
                 ''' discard points in negative or out-of-range disparity'''
                 dis = x-cp_x
-                if dis < 15 or dis > 120 :   # discard points in negative  or out-of-range disparity
+                if dis < 15 or dis > 120 :
                     continue
 
                 ''' discard points different to much in intensity'''
@@ -125,18 +128,21 @@ if __name__ == "__main__":
                 score = calcPatchScore(y,x,cp_x)
                 if score > 3:
                     continue
-
-                if score < min_score:   # only keep the best match
+                ''' only keep the best match'''
+                if score < min_score:
                     min_score = score
                     d_result[y,x] = x-cp_x
 
         if debug:
-            print 'depth at %d with score:%f' % (cp_x, min_score)
-            a0.vlines(x-d_result[y,x],0,scale,'g',linewidths=3)
-            a1.vlines(x-d_result[y,x],0,255,'g',linewidths=3)
+            if min_score != np.inf:
+                print 'depth at %d with score:%f' % (cp_x, min_score)
+                a0.vlines(x-d_result[y,x],0,scale,'g',linewidths=3)
+                a1.vlines(x-d_result[y,x],0,255,'g',linewidths=3)
 
             plt.pause(0.01)
             plt.waitforbuttonpress()
+    pis(d_result)
+#%%
 
     v,u = np.where(d_result != 0)
     p3d = np.vstack([(u-0.5*w)/435.016,
@@ -144,3 +150,25 @@ if __name__ == "__main__":
                      np.ones(u.shape[0])
                      ]).astype('f')/d_result[v,u]*0.119554
     plotxyzrgb(np.vstack([p3d,np.tile(imleft[v,u],(3,1))]).T)
+#%%
+    y = 205; x = 305
+    f = imleft[205,:]
+    g = imright[205,:]
+    df = scipy.ndimage.filters.gaussian_gradient_magnitude(f,2)
+    dg = scipy.ndimage.filters.gaussian_gradient_magnitude(g,2)
+    plt.subplot(2,1,1)
+    plt.plot(f,'r')
+    plt.plot(g,'b')
+    plt.subplot(2,1,2)
+    plt.plot(df,'r')
+    plt.plot(dg,'b')
+
+    pf()
+    plt.subplot(2,1,1)
+    plt.plot(f)
+
+    zc = np.where(np.diff(np.signbit(df)))
+    for i in zc:
+        plt.vlines(i+1,0,255)
+    plt.subplot(2,1,2)
+    plt.plot(df)
