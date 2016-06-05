@@ -318,7 +318,7 @@ if __name__ == "__main__":
         imheight,imwidth = frames[0].shape[:2]
 
     fx,fy,cx,cy = K[0,0],K[1,1],K[0,2],K[1,2]
-    refid, curid = 0,1
+    refid, curid = 0,8
     Iref, G0, Z = frames[refid].astype('f')/255.0, wGc[refid].astype('f'), Zs[refid].astype('f')
     Icur, G1  = frames[curid].astype('f')/255.0, wGc[curid].astype('f')
     cGr = np.dot(np.linalg.inv(G1), G0)
@@ -351,48 +351,48 @@ if __name__ == "__main__":
     if 1:
         plt.close('all')
         f,(a,b) = plt.subplots(2,1,num='epiline')
-        a.imshow(sim(dI,dIc))
+        a.imshow(sim(Iref,Icur))
 
+        while 1:
+            '''pick a target point in the left image(reference)'''
+            p = np.round(plt.ginput(1, timeout=-1)[0]).reshape(-1,1)
+            a.plot(p[0], p[1],'*')
 
-        '''pick a target point in the left image(reference)'''
-        p = np.round(plt.ginput(1, timeout=-1)[0]).reshape(-1,1)
-        a.plot(p[0], p[1],'*')
+            cGr = np.dot(np.linalg.inv(wGc[curid]), wGc[refid])
+    #        cGr = np.linalg.inv(cGr)
+            Rcr, Tcr = cGr[0:3,0:3], cGr[0:3,3].reshape(-1,1)
 
-        cGr = np.dot(np.linalg.inv(wGc[curid]), wGc[refid])
-#        cGr = np.linalg.inv(cGr)
-        Rcr, Tcr = cGr[0:3,0:3], cGr[0:3,3].reshape(-1,1)
+            ''' Tcr is the negative position of R in C coord, project it to the C image.
+                It corresponds to 0 depth.Inf point will have 0 in its 4th coordinate,
+                which means only affected by Rotation. More details see
+                "Comments on 'Consistent Depth Maps Recovery from a Video Sequence'"
+                 http://www.cs.uu.nl/research/techreps/repo/CS-2011/2011-014.pdf
+            '''
+            min_idepth, max_idepth = 0.0, np.inf
+            Pc0   = K.dot(Tcr)
+            Pinf = K.dot(Rcr.dot(np.linalg.inv(K).dot(homogeneous(p))))
 
-        ''' Tcr is the negative position of R in C coord, project it to the C image.
-            It corresponds to 0 depth.Inf point will have 0 in its 4th coordinate,
-            which means only affected by Rotation. More details see
-            "Comments on 'Consistent Depth Maps Recovery from a Video Sequence'"
-             http://www.cs.uu.nl/research/techreps/repo/CS-2011/2011-014.pdf
-        '''
-        min_idepth, max_idepth = 0.0, np.inf
-        Pc0   = K.dot(Tcr)
-        Pinf = K.dot(Rcr.dot(np.linalg.inv(K).dot(homogeneous(p))))
+            Pt = metric(K.dot(Rcr.dot(np.linalg.inv(K).dot(homogeneous(p)*9.38))+Tcr))
 
-        Pt = metric(K.dot(Rcr.dot(np.linalg.inv(K).dot(homogeneous(p)*9.38))+Tcr))
+            a0 = (0.01 - Pinf[2])/Pc0[2]      # Pinf[2] + λ*Pc[2] > 0
+            a1 = (Pinf[0]-640*Pinf[2])/(640*Pc0[2]-Pc0[0])
+            a2 = (Pinf[1]-480*Pinf[2])/(480*Pc0[2]-Pc0[1])
+            max_idepth = np.min([a0, a1, a2])
+            Pc = Pinf + max_idepth*Pc0
+            Pc = metric(Pc)
 
-        a0 = (0.01 - Pinf[2])/Pc0[2]      # Pinf[2] + λ*Pc[2] > 0
-        a1 = (Pinf[0]-640*Pinf[2])/(640*Pc0[2]-Pc0[0])
-        a2 = (Pinf[1]-480*Pinf[2])/(480*Pc0[2]-Pc0[1])
-        max_idepth = np.min([a0, a1, a2])
-        Pc = Pinf + max_idepth*Pc0
-        Pc = metric(Pc)
+            if Pinf[2] < 0 or max_idepth < min_idepth:
+                print "Both points are invalid"
+            Pinf = metric(Pinf)
+            print 'min depth %f' % (1/max_idepth)
+            a.plot(Pinf[0]+640, Pinf[1], 'r.')
 
-        if Pinf[2] < 0 or max_idepth < min_idepth:
-            print "Both points are invalid"
-        Pinf = metric(Pinf)
-        print 'min depth %f' % (1/max_idepth)
-        a.plot(Pinf[0]+640, Pinf[1], 'r.')
+            a.plot(Pc[0]+640, Pc[1], '*')
+            ''' search line on right image (current)'''
+            a.plot([Pc[0]+640,Pinf[0]+640],
+                   [Pc[1], Pinf[1]],'b-')  # the complete epi line
 
-        a.plot(Pc[0]+640, Pc[1], '*')
-        ''' search line on right image (current)'''
-        a.plot([Pc[0]+640,Pinf[0]+640],
-               [Pc[1], Pinf[1]],'b-')  # the complete epi line
-
-        plt.pause(0.01)
+            plt.pause(0.01)
 #%%
         normalize = lambda x:x/np.linalg.norm(x)
 
@@ -400,13 +400,13 @@ if __name__ == "__main__":
 #                                        Tcr[2]*(p[1]-cy) -fy*Tcr[1]])
         epl_len = np.linalg.norm(Pinf-Pc)
         dxy = normalize(Pinf-Pc)
-        sample_size = 100#np.ceil(max_idepth)
+        sample_size = 50#np.ceil(max_idepth)
         sample_pts = np.array([np.linspace(Pinf[0], Pc[0], sample_size),
                                np.linspace(Pinf[1], Pc[1], sample_size),
                                np.linspace(0,  max_idepth, sample_size) ])
         a.plot(sample_pts[0]+640, sample_pts[1],'.')
         sample_value = sample(dIc, sample_pts[0],sample_pts[1])
-        b.plot(sample_pts[2], sample_value)
+        b.plot(sample_pts[2], sample_value,'*-')
 
         target_value = dI[p[1,0], p[0,0]]
         b.hlines(target_value, 0, max_idepth)

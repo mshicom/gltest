@@ -75,7 +75,7 @@ if __name__ == "__main__":
         a0 = (0.01 - Pinf[2])/Pc0[2]      # Pinf[2] + λ*Pc[2] > 0.01
         a1 = (Pinf[0]-640*Pinf[2])/(640*Pc0[2]-Pc0[0])
         a2 = (Pinf[1]-480*Pinf[2])/(480*Pc0[2]-Pc0[1])
-        max_idepth = a0 # np.min([a0, a1, a2])
+        max_idepth = np.min([a0, a1, a2])
         Pc = Pinf + max_idepth*Pc0
         if Pinf[2] < 0 or max_idepth < min_idepth:
             print "Both points are invalid"
@@ -96,11 +96,11 @@ if __name__ == "__main__":
 
     p = np.round(plt.ginput(1, timeout=-1)[0])
     Pc1, Pinf1, ld, _ = calcEpl(p)
-    a.plot([Pc[0]+640,Pinf[0]+640],
-           [Pc[1], Pinf[1]],'b-')  # the complete epi line
+    a.plot([Pc1[0]+640,Pinf1[0]+640],
+           [Pc1[1], Pinf1[1]],'b-')  # the complete epi line
     a.plot(p[0], p[1],'*')
     dist_p = np.hstack([p,1]).dot(l)
 
     ld0 = np.array([Tcr[2]*(p[0]-cx) -fx*Tcr[0],
                     Tcr[2]*(p[1]-cy) -fy*Tcr[1]])
-    pi=cv2.linearPolar(Iref,(cx,cy),300,cv2.WARP_FILL_OUTLIERS)
+#    pi=cv2.linearPolar(Iref,(cx,cy),300,cv2.WARP_FILL_OUTLIERS)
