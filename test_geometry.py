@@ -52,7 +52,7 @@ if __name__ == "__main__":
         h,w = frames[0].shape[:2]
 
     fx,fy,cx,cy = K[0,0],K[1,1],K[0,2],K[1,2]
-    refid, curid = 0,8
+    refid, curid = 8,0
     Iref, G0, Z = frames[refid].astype('f')/255.0, wGc[refid].astype('f'), Zs[refid].astype('f')
     Icur, G1  = frames[curid].astype('f')/255.0, wGc[curid].astype('f')
     Iref3 = np.tile(Iref.ravel(), (3,1))
@@ -121,7 +121,11 @@ if __name__ == "__main__":
         return angle+360 if angle<0 else angle
 
 #%% generate target point
-    grad = scipy.ndimage.filters.gaussian_gradient_magnitude(Iref, 1)
+    def calcGradient(im):
+        dx,dy = np.gradient(im)
+        return np.sqrt(dx**2+dy**2)
+
+    grad = calcGradient(Iref)
     grad_threshold = np.percentile(grad,80)
 
     u, v = np.meshgrid(range(w),range(h))
@@ -150,7 +154,7 @@ if __name__ == "__main__":
         data[int(np.round(a))][int(np.round(g))].append(p)
 
 #%%
-    grad = scipy.ndimage.filters.gaussian_gradient_magnitude(Icur, 1)
+    grad = calcGradient(Icur)
     mask_cur = reduce(np.logical_and,[grad>grad_threshold, u>1, v>1, u<w-2, v<h-2])
     puv_cur = np.array(np.where(mask_cur)).T
     pts_cur = np.vstack([ub[mask_cur], vb[mask_cur], np.ones(mask_cur.sum())])
@@ -184,23 +188,27 @@ if __name__ == "__main__":
 
 
     f,(al,ar) = plt.subplots(1,2,num='query')
-    start = 10000
-    for p,a in zip(puv_cur[start:], ang_cur[start:]):
-        a = int(np.round(a))
-        if a<0 or a>ang_scaler.levels:
-            print 'point out of range'
-            continue
+    start = 20000
+    import itertools
+    for p,an in zip(puv_cur[start:], ang_cur[start:]):
+        an = int(np.round(an))
         al.clear(); ar.clear()
         al.imshow(Iref); ar.imshow(Icur)
         ar.plot(p[1],p[0],'r.')
 
         Pc, Pinf, _, max_idepth = calcEpl([p[1],p[0]])
-#        if max_idepth>0:
         al.plot(Pinf[0], Pinf[1],'r*')
-        pcan = data[a]
-        for ptt in itertools.chain(pcan):
-            for pt in ptt:
-                al.plot(pt[1],pt[0],'b.')
+        if max_idepth>0:
+            al.plot([Pc[0],Pinf[0]], [Pc[1],Pinf[1]],'r')
+        for off in [0]:
+            a = an + off
+            if a<0 or a>ang_scaler.levels:
+                continue
+
+            pcan = data[a]
+            for ptt in itertools.chain(pcan):
+                for pt in ptt:
+                    al.plot(pt[1],pt[0],'b.',ms=2)
         plt.pause(0.01)
         plt.waitforbuttonpress()
 

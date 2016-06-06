@@ -318,7 +318,7 @@ if __name__ == "__main__":
         imheight,imwidth = frames[0].shape[:2]
 
     fx,fy,cx,cy = K[0,0],K[1,1],K[0,2],K[1,2]
-    refid, curid = 0,8
+    refid, curid = 5,0
     Iref, G0, Z = frames[refid].astype('f')/255.0, wGc[refid].astype('f'), Zs[refid].astype('f')
     Icur, G1  = frames[curid].astype('f')/255.0, wGc[curid].astype('f')
     cGr = np.dot(np.linalg.inv(G1), G0)
@@ -383,6 +383,7 @@ if __name__ == "__main__":
 
             if Pinf[2] < 0 or max_idepth < min_idepth:
                 print "Both points are invalid"
+                continue
             Pinf = metric(Pinf)
             print 'min depth %f' % (1/max_idepth)
             a.plot(Pinf[0]+640, Pinf[1], 'r.')
