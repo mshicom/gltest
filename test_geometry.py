@@ -48,22 +48,55 @@ if __name__ == "__main__":
     Iref3 = np.tile(Iref.ravel(), (3,1))
     Icur3 = np.tile(Icur.ravel(), (3,1))
 #%%
-    plt.close('all')
-    f,(a) = plt.subplots(1,1,num='epiline')
-    a.imshow(sim(Iref, Icur))
-
     cGr = np.dot(np.linalg.inv(wGc[curid]), wGc[refid])
     Rcr, Tcr = cGr[0:3,0:3], cGr[0:3,3]
-
+    rGc = np.dot(np.linalg.inv(wGc[refid]), wGc[curid])
+    Rrc, Trc = rGc[0:3,0:3], rGc[0:3,3]
 
     u,v = np.meshgrid(range(w), range(h))
     u,v = (u.ravel()-cx)/fx, (v.ravel()-cy)/fy
     pref = np.vstack([u, v, np.ones(w*h) ]).astype('f')
-    pref /= np.linalg.norm(pref, axis=0)*10
-    plotxyz(np.vstack([pref,Iref3]).T)
+    pt = pref*Z.ravel()
+    p0 = np.vstack([pt,Iref3])
 
-    pcur = np.linalg.inv(cGr).dot(homogeneous(pref))[:3]
-    plotxyz(np.vstack([pcur, Icur3]).T, hold=True)
+    pref /= np.linalg.norm(pref, axis=0)*6
+    p1 = np.vstack([pref,Iref3])
+
+#    plotxyz(np.vstack([pref,Iref3]).T)
+
+    pcur = rGc.dot(homogeneous(pref))[:3]
+    p2 = np.vstack([pcur,Icur3])
+#    plotxyz(np.vstack([pcur, Icur3]).T, hold=True)
+
+    vtk = get_vtk_control()
+    vtk.RemoveAllActors()
+    vtk.AddPointCloudActor(np.hstack([p0,p1,p2]).T)
+    vtk.AddLine([0,0,0], Trc)
+
+    p = (181,282)
+    ps = np.array([(p[0]-cx)/fx,(p[1]-cy)/fy,1])*Z[p[1],p[0]]
+    vtk.AddLine([0,0,0], ps)
+    vtk.AddLine(Trc, ps)
+
+#%% calculate the
+    '''define vectors correspond to 4 image corners '''
+    corners = [[0,0],[0,h],[w,h],[w,0]]
+    corners = [normalize(np.array([(cn[0]-cx)/fx,
+                                   (cn[1]-cy)/fy,
+                                             1])) for cn in corners]
+
+    '''generate new coordinate system'''
+    ax_z = normalize(Trc)                          # vector pointed to camera Cur serve as z axis
+    ax_y = normalize(np.cross(ax_z, corners[0]))   # top-left corner serves as temperary x axis
+    ax_x = normalize(np.cross(ax_y, ax_z))
+    M = np.vstack([ax_x,ax_y,ax_z])
+
+    '''transform the vector to new coordinate and then calculate the vector
+       angle wrt. to x axis'''
+    new_ps = [M.dot(cn) for cn in corners]
+    angles = [np.rad2deg(np.arctan2(p[1], p[0])) for p in new_ps]
+
+    print angles
 
 
 
