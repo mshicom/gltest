@@ -18,6 +18,7 @@ import scipy.ndimage
 from vtk_visualizer import *
 #%%
 
+
 def loaddata1():
     data = scipy.io.loadmat('data.mat')
     frames, = data['I']
@@ -78,15 +79,15 @@ if __name__ == "__main__":
     p2 = np.vstack([pcur,Icur3])
 #    plotxyz(np.vstack([pcur, Icur3]).T, hold=True)
 
-    vtk = get_vtk_control()
-    vtk.RemoveAllActors()
-    vtk.AddPointCloudActor(np.hstack([p0,p1,p2]).T)
-    vtk.AddLine([0,0,0], Trc)
+    vis = get_vtk_control()
+    vis.RemoveAllActors()
+    vis.AddPointCloudActor(np.hstack([p0,p1,p2]).T)
+    vis.AddLine([0,0,0], Trc)
 
-    p = (181,282)
+    p = (202,299)
     ps = np.array([(p[0]-cx)/fx,(p[1]-cy)/fy,1])*Z[p[1],p[0]]
-    vtk.AddLine([0,0,0], ps)
-    vtk.AddLine(Trc, ps)
+    vis.AddLine([0,0,0], ps)
+    vis.AddLine(Trc, ps)
 
 #%% calculate the
     '''define vectors correspond to 4 image corners '''
@@ -147,11 +148,14 @@ if __name__ == "__main__":
     ang_scaler = Scaler(ang_ref.min(), ang_ref.max(), 360)
     ang_ref = vec(ang_scaler(ang_ref))
 
+    ang_ref_z =  vec(np.rad2deg(np.arctan2(np.linalg.norm(pvp[:2,:],axis=0), pvp[2,:])))
+    ang_ref_z[ang_ref_z<0] += 360
+
     '''fill the data structure'''
     data = [[[] for _ in range(grad_scaler.levels+1)] for _ in range(ang_scaler.levels+1)]
-    for p,a,g in zip(puv_ref, ang_ref, grad_ref):
+    for p,a,az,g in zip(puv_ref, ang_ref,ang_ref_z, grad_ref):
         """put pixels into bins base on their color"""
-        data[int(np.round(a))][int(np.round(g))].append(p)
+        data[int(np.round(a))][int(np.round(g))].append((p,az))
 
 #%%
     grad = calcGradient(Icur)
@@ -162,6 +166,9 @@ if __name__ == "__main__":
     ang_cur = np.rad2deg(np.arctan2(pts_cur[1,:], pts_cur[0,:]))
     ang_cur[ang_cur<0] += 360
     ang_cur = vec(ang_scaler(ang_cur))
+    ang_cur_z =  vec(np.rad2deg(np.arctan2(np.linalg.norm(pts_cur[:2,:],axis=0), pts_cur[2,:])))
+    ang_cur_z[ang_cur_z<0] += 360
+
     grad_cur = grad[mask_cur]
     grad_cur = vec(grad_scaler(grad_cur))
 
@@ -190,7 +197,7 @@ if __name__ == "__main__":
     f,(al,ar) = plt.subplots(1,2,num='query')
     start = 20000
     import itertools
-    for p,an in zip(puv_cur[start:], ang_cur[start:]):
+    for p,an,az in zip(puv_cur[start:], ang_cur[start:],ang_cur_z[start:]):
         an = int(np.round(an))
         al.clear(); ar.clear()
         al.imshow(Iref); ar.imshow(Icur)
@@ -208,7 +215,9 @@ if __name__ == "__main__":
             pcan = data[a]
             for ptt in itertools.chain(pcan):
                 for pt in ptt:
-                    al.plot(pt[1],pt[0],'b.',ms=2)
+                    if pt[1] < az:
+                        uv = pt[0]
+                        al.plot(uv[1],uv[0],'b.',ms=2)
         plt.pause(0.01)
         plt.waitforbuttonpress()
 
