@@ -116,6 +116,16 @@ if __name__ == "__main__":
     angles = [np.rad2deg(np.arctan2(p[1], p[0])) for p in new_ps]
     print angles
 
+    if 0:
+        phi,theta = np.meshgrid(range(78), range(10,170))
+        phi = np.deg2rad(phi.ravel())
+        theta = np.deg2rad(theta.ravel())
+        pxyz = np.vstack([np.sin(theta)*np.cos(phi),
+                          np.sin(theta)*np.sin(phi),
+                          np.cos(theta)])
+        pxyz = M.T.dot(pxyz)
+        vis.AddPointCloudActor(pxyz.T)
+
     def calcAngle(p, M):
         pp = M.dot(p)
         angle = np.rad2deg(np.arctan2(pp[1], pp[0]))
@@ -157,6 +167,13 @@ if __name__ == "__main__":
         """put pixels into bins base on their color"""
         data[int(np.round(a))][int(np.round(g))].append((p,az))
 
+    if 0:
+        rec_im = np.zeros((361,361))
+        for p,a,az,g in zip(puv_ref, ang_ref,ang_ref_z, grad_ref):
+           rec_im[int(np.round(az)),int(np.round(a))]=1
+        pis(rec_im[57:140,:])
+
+
 #%%
     grad = calcGradient(Icur)
     mask_cur = reduce(np.logical_and,[grad>grad_threshold, u>1, v>1, u<w-2, v<h-2])
@@ -171,6 +188,13 @@ if __name__ == "__main__":
 
     grad_cur = grad[mask_cur]
     grad_cur = vec(grad_scaler(grad_cur))
+
+    data_cur = [[[] for _ in range(grad_scaler.levels+1)] for _ in range(ang_scaler.levels+1)]
+    for p,a,az,g in zip(puv_cur, ang_cur,ang_cur_z, grad_cur):
+        """put pixels into bins base on their color"""
+        if a > 360 or g > 255:
+            continue
+        data_cur[int(np.round(a))][int(np.round(g))].append((p,az))
 
 #%%
     def calcEpl(p):
@@ -197,7 +221,7 @@ if __name__ == "__main__":
     f,(al,ar) = plt.subplots(1,2,num='query')
     start = 20000
     import itertools
-    for p,an,az in zip(puv_cur[start:], ang_cur[start:],ang_cur_z[start:]):
+    for p,an,az,g in zip(puv_cur[start:], ang_cur[start:], ang_cur_z[start:], grad_cur[start:]):
         an = int(np.round(an))
         al.clear(); ar.clear()
         al.imshow(Iref); ar.imshow(Icur)
@@ -218,6 +242,13 @@ if __name__ == "__main__":
                     if pt[1] < az:
                         uv = pt[0]
                         al.plot(uv[1],uv[0],'b.',ms=2)
+
+#            for off in [0,-1,1,2,-2]:
+#                pcan = data[a][np.clip(int(np.round(g))+off,0,255)]
+#                for pt in pcan:
+#                    if pt[1] < az:
+#                        uv = pt[0]
+#                        al.plot(uv[1],uv[0],'b.')
         plt.pause(0.01)
         plt.waitforbuttonpress()
 
