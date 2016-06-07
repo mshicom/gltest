@@ -188,15 +188,45 @@ if __name__ == "__main__":
 
     grad_cur = grad[mask_cur]
     grad_cur = vec(grad_scaler(grad_cur))
+    import itertools
 
-    data_cur = [[[] for _ in range(grad_scaler.levels+1)] for _ in range(ang_scaler.levels+1)]
-    for p,a,az,g in zip(puv_cur, ang_cur,ang_cur_z, grad_cur):
-        """put pixels into bins base on their color"""
-        if a > 360 or g > 255:
-            continue
-        data_cur[int(np.round(a))][int(np.round(g))].append((p,az))
+    if 1:
+        data_cur = [[[] for _ in range(grad_scaler.levels+1)] for _ in range(ang_scaler.levels+1)]
+        for p,a,az,g in zip(puv_cur, ang_cur,ang_cur_z, grad_cur):
+            """put pixels into bins base on their color"""
+            if a > 360 or g > 255:
+                continue
+            data_cur[int(np.round(a))][int(np.round(g))].append((p,az))
+#%% demo: points on the scanline
+        f = plt.figure(num='query')
+        gs = plt.GridSpec(2,2)
+        ar,ac = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
+        ab = f.add_subplot(gs[1,:])
+        ab.autoscale()
+        for a in range(ang_scaler.levels+1):
+            ac.clear(); ar.clear();ab.clear()
+            ar.imshow(Iref); ac.imshow(Icur)
+            pr,pc = [],[]
 
-#%%
+            for ptt in itertools.chain(data_cur[a]):
+                for pt in ptt:
+                    p = pt[0]
+                    ac.plot(p[1],p[0],'r.')
+                    pc.append((double(pt[1]), Icur[p[0],p[1]]))
+            for ptt in itertools.chain(data[a]):
+                for pt in ptt:
+                    p = pt[0]
+                    ar.plot(p[1],p[0],'b.')
+                    pr.append((double(pt[1]), Iref[p[0],p[1]]))
+            pr.sort(key=lambda x:x[0])
+            pc.sort(key=lambda x:x[0])
+            pr = zip(*pr)
+            pc = zip(*pc)
+            ab.plot(pr[0],pr[1],'b*-')
+            ab.plot(pc[0],pc[1],'r*-')
+            plt.pause(0.01)
+            plt.waitforbuttonpress()
+#%% demo: single point on the other image
     def calcEpl(p):
         min_idepth, max_idepth = 0.0, np.inf
         Pc0  = K.dot(Trc)
@@ -220,7 +250,7 @@ if __name__ == "__main__":
 
     f,(al,ar) = plt.subplots(1,2,num='query')
     start = 20000
-    import itertools
+
     for p,an,az,g in zip(puv_cur[start:], ang_cur[start:], ang_cur_z[start:], grad_cur[start:]):
         an = int(np.round(an))
         al.clear(); ar.clear()
