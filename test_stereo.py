@@ -27,9 +27,9 @@ if __name__ == "__main__":
     #%% get good pixels
     dI,px,py,pcolor,pvm = [],[],[],[],[]
     for i,im in enumerate([imleft, imright]):
-        d = scipy.ndimage.filters.gaussian_gradient_magnitude(im,2)
+        d = scipy.ndimage.filters.gaussian_gradient_magnitude(im,1)
         d_abs = np.abs(d)
-        valid_mask = d_abs>np.percentile(d_abs,70)
+        valid_mask = d_abs>np.percentile(d_abs,80)
         dI.append( d.copy() )
         u, v = np.meshgrid(range(w),range(h))
         pixel_mask = reduce(np.logical_and,[valid_mask, u>1, v>1, u<w-2, v<h-2])
@@ -49,56 +49,120 @@ if __name__ == "__main__":
 
 
 #%% construct database
-    data = [[[] for _ in range(scale+1)] for _ in range(h)]
-    for x,y,c in zip(px[1], py[1], pcolor[1]):
+    data = [[] for _ in range(h)]
+    for x,y in zip(px[1], py[1]):
         """put pixels into bins base on their color"""
-        data[y][c].append(x)
+        data[y].append(x)
 
-    data_l = [[[] for _ in range(scale+1)] for _ in range(h)]
-    for x,y,c in zip(px[0], py[0], pcolor[0]):
+    data_l = [[] for _ in range(h)]
+    for x,y in zip(px[0], py[0]):
         """put pixels into bins base on their color"""
-        data_l[y][c].append(x)
-#%% DP
-    import itertools
+        data_l[y].append(x)
+#%% fast DP
+    d_result = np.full_like(imleft, -1)
+    vec = lambda x:np.reshape(x,(-1,1))
+    def dpProcess():
+        for y in range(h):
+            pl,pr = [],[]
+            '''obtain and plot the row data'''
+            for p in data_l[y]:
+                pl.append((p, imleft[y, p], dI[0][y, p]))
+
+            for p in data[y]:
+                pr.append((p, imright[y,p], dI[1][y, p]))
+
+            if pl and pr:
+                pl.sort(key=lambda x:x[0])
+                pr.sort(key=lambda x:x[0])
+                pl = zip(*pl)
+                pr = zip(*pr)
+
+                '''DP 1st step: get all matching error array and corresponding
+                   dispairity value, use broacasting to get MxN array,
+                   rows for sequential target points(in left image),
+                   colums for candidate matching points (in right image)'''
+                M,N = (len(pl[0]), len(pr[1]))
+                vl = np.array(pl[0])    # x coordinates
+                vr = np.array(pr[0])
+                dis = vec(vl)-vr        # corresponding dispairity value for array Edata
+
+                vl = np.array(pl[2])
+                vr = np.array(pr[2])
+                Edata = 0.5*(vec(vl)-vr)**2
+                vl = np.array(pl[1])
+                vr = np.array(pr[1])
+                Edata += 0.5*(vec(vl)-vr)**2
+                Edata[dis<10] = np.inf   # negative disparity should not be considered
+
+                '''DP 2nd step: calculate regularise term'''
+                S = np.empty_like(Edata)
+                Best_rec = np.empty_like(Edata,'i8')
+                S[0] = Edata[0]
+                Best_rec[0] = range(N)
+                for i in xrange(1, M):
+                    ''' non-smooth punishment '''
+                    Ereg = (vec(dis[i]) - dis[i-1])**2/(pl[0][i]-pl[0][i-1])   # NxN array, costs for dispairity jumps from last point to this point
+                    Etotal = S[i-1] + Ereg           # matching cost + jump cost
+                    best_idx = np.nanargmin(Etotal, axis=1)   # Nx1 array, For each value of x2 determine the best value of x1
+                    S[i] = Edata[i] + Etotal[range(N),best_idx] #
+                    Best_rec[i] = best_idx
+
+                '''DP 3rd step: backtrace to readout the optimum'''
+                res = np.nanargmin(S[i])        # result of final step
+                d_result[y,pl[0][i]] = pl[0][i]-pr[0][res]
+                for j in xrange(i-1, -1, -1):
+                    '''given the state of parent step, lookup the waypoint to it'''
+                    res = Best_rec[j+1][res]
+                    d_result[y,pl[0][j]] = pl[0][j]-pr[0][res]
+            print y
+    dpProcess()
+#%%
+    v,u = np.where(d_result != -1)
+    p3d = np.vstack([(u-0.5*w)/435.016,
+                     (v-0.5*h)/435.016,
+                     np.ones(u.shape[0])
+                     ]).astype('f')/d_result[v,u]*0.119554
+    plotxyzrgb(np.vstack([p3d,np.tile(imleft[v,u],(3,1))]).T)
+
+#%% DP debug
     f = plt.figure(num='query')
     gs = plt.GridSpec(2,2)
     al,ar = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
     ab = f.add_subplot(gs[1,:])
     ab.autoscale()
     vec = lambda x:np.reshape(x,(-1,1))
-    for y in range(7,h):
+    for y in range(125,h):
         al.clear(); ar.clear();ab.clear()
         al.imshow(imleft); ar.imshow(imright)
         pl,pr = [],[]
         '''obtain and plot the row data'''
-        for ptt in itertools.chain(data_l[y]):
-            for p in ptt:
-                al.plot(p, y,'r.',ms=3)
-                pl.append((p, imleft[y, p]))
-        for ptt in itertools.chain(data[y]):
-            for p in ptt:
-                ar.plot(p, y,'b.',ms=3)
-                pr.append((p, imright[y,p]))
+        for p in data_l[y]:
+            al.plot(p, y,'r.',ms=3)
+            pl.append((p, imleft[y, p], dI[0][y, p]))
+        for p in data[y]:
+            ar.plot(p, y,'b.',ms=3)
+            pr.append((p, imright[y,p], dI[1][y, p]))
         if pl and pr:
             pl.sort(key=lambda x:x[0])
             pr.sort(key=lambda x:x[0])
             pl = zip(*pl)
             pr = zip(*pr)
-
-
-            '''DP 1st step: get all matching error array and corresponding dispairity value'''
-            vl = np.array([imleft[y,x] for x in pl[0]])
-            vr = np.array([imright[y,x] for x in pr[0]])
-            ''' use broacasting to get MxN array,
-            rows for sequential target points(in left image),
-            colums for candidate matching points (in right image)'''
-            Edata = np.abs(vec(vl)-vr)
+            '''DP 1st step: get all matching error array and corresponding
+               dispairity value, use broacasting to get MxN array,
+               rows for sequential target points(in left image),
+               colums for candidate matching points (in right image)'''
             M,N = (len(pl[0]), len(pr[1]))
-
             vl = np.array(pl[0])    # x coordinates
             vr = np.array(pr[0])
             dis = vec(vl)-vr        # corresponding dispairity value for array Edata
-            Edata[dis<0] = np.inf   # negative disparity should not be considered
+
+            vl = np.array(pl[2])
+            vr = np.array(pr[2])
+            Edata = 0.5*(vec(vl)-vr)**2
+            vl = np.array(pl[1])
+            vr = np.array(pr[1])
+            Edata += 0.5*(vec(vl)-vr)**2
+            Edata[dis<10] = np.inf   # negative disparity should not be considered
 
             '''DP 2nd step: calculate regularise term'''
             S = np.empty_like(Edata)
@@ -107,23 +171,25 @@ if __name__ == "__main__":
             Best_rec[0] = range(N)
             for i in xrange(1, M):
                 ab.clear()
-                ab.plot(pr[0],pr[1],'b*-')
-                ab.plot(pl[0][:i+1],pl[1][:i+1],'r*-')
+                ab.plot(pr[0],vr,'b*-')
+                ab.plot(pl[0][:i+1],vl[:i+1],'r*-')
 
                 ''' non-smooth punishment '''
-                Ereg = (vec(dis[i]) - dis[i-1])**2/(vl[i]-vl[i-1])   # NxN array, costs for dispairity jumps from last point to this point
-                Etotal = vec(S[i-1]) + 10*Ereg           # matching cost + jump cost
-                best_idx = np.nanargmin(Etotal, axis=0)   # Nx1 array, shortest path to current N choose
+                Ereg = (vec(dis[i]) - dis[i-1])**2/(pl[0][i]-pl[0][i-1])   # NxN array, costs for dispairity jumps from last point to this point
+                Etotal = S[i-1] + 10*Ereg           # matching cost + jump cost
+                best_idx = np.nanargmin(Etotal, axis=1)   # Nx1 array, For each value of x2 determine the best value of x1
                 S[i] = Edata[i] + Etotal[range(N),best_idx] #
                 Best_rec[i] = best_idx
 
                 '''DP 3rd step: backtrace to readout the optimum'''
                 res = np.nanargmin(S[i]) # get the final best
-                ab.plot([pl[0][i],pr[0][i]], [pl[1][res],pr[1][res]],'g-')
-                for j in xrange(i-1, 0, -1):
+                ab.plot([pl[0][i],  pr[0][res]],
+                        [vl[i],vr[res]],'g-')
+                for j in xrange(i-1, -1, -1):
                     '''given the state of parent step, lookup the waypoint to it'''
                     res = Best_rec[j+1][res]
-                    ab.plot([pl[0][i],pr[0][i]], [pl[1][res],pr[1][res]],'g-')
+                    ab.plot([pl[0][j],  pr[0][res]],
+                            [vl[j],vr[res]],'-')
 
                 plt.pause(0.01)
                 plt.waitforbuttonpress()
@@ -220,31 +286,3 @@ if __name__ == "__main__":
             plt.waitforbuttonpress()
     pis(d_result)
 
-    v,u = np.where(d_result != 0)
-    p3d = np.vstack([(u-0.5*w)/435.016,
-                     (v-0.5*h)/435.016,
-                     np.ones(u.shape[0])
-                     ]).astype('f')/d_result[v,u]*0.119554
-    plotxyzrgb(np.vstack([p3d,np.tile(imleft[v,u],(3,1))]).T)
-#%%
-    y = 205; x = 305
-    f = imleft[205,:]
-    g = imright[205,:]
-    df = scipy.ndimage.filters.gaussian_gradient_magnitude(f,2)
-    dg = scipy.ndimage.filters.gaussian_gradient_magnitude(g,2)
-    plt.subplot(2,1,1)
-    plt.plot(f,'r')
-    plt.plot(g,'b')
-    plt.subplot(2,1,2)
-    plt.plot(df,'r')
-    plt.plot(dg,'b')
-
-    pf()
-    plt.subplot(2,1,1)
-    plt.plot(f)
-
-    zc = np.where(np.diff(np.signbit(df)))
-    for i in zc:
-        plt.vlines(i+1,0,255)
-    plt.subplot(2,1,2)
-    plt.plot(df)
