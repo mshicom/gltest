@@ -27,7 +27,7 @@ if __name__ == "__main__":
     #%% get good pixels
     dI,px,py,pcolor,pvm = [],[],[],[],[]
     for i,im in enumerate([imleft, imright]):
-        d = scipy.ndimage.filters.gaussian_gradient_magnitude(im,3)
+        d = scipy.ndimage.filters.gaussian_gradient_magnitude(im,2)
         d_abs = np.abs(d)
         valid_mask = d_abs>np.percentile(d_abs,70)
         dI.append( d.copy() )
@@ -54,7 +54,80 @@ if __name__ == "__main__":
         """put pixels into bins base on their color"""
         data[y][c].append(x)
 
- #%%
+    data_l = [[[] for _ in range(scale+1)] for _ in range(h)]
+    for x,y,c in zip(px[0], py[0], pcolor[0]):
+        """put pixels into bins base on their color"""
+        data_l[y][c].append(x)
+#%% DP
+    import itertools
+    f = plt.figure(num='query')
+    gs = plt.GridSpec(2,2)
+    al,ar = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
+    ab = f.add_subplot(gs[1,:])
+    ab.autoscale()
+    vec = lambda x:np.reshape(x,(-1,1))
+    for y in range(2,h):
+        al.clear(); ar.clear();ab.clear()
+        al.imshow(imleft); ar.imshow(imright)
+        pl,pr = [],[]
+        '''obtain and plot the row data'''
+        for ptt in itertools.chain(data_l[y]):
+            for p in ptt:
+                al.plot(p, y,'r.',ms=3)
+                pl.append((p, imleft[y, p]))
+        for ptt in itertools.chain(data[y]):
+            for p in ptt:
+                ar.plot(p, y,'b.',ms=3)
+                pr.append((p, imright[y,p]))
+        if pl:
+            pl.sort(key=lambda x:x[0])
+            pl = zip(*pl)
+            ab.plot(pl[0],pl[1],'r*-')
+        if pr:
+            pr.sort(key=lambda x:x[0])
+            pr = zip(*pr)
+            ab.plot(pr[0],pr[1],'b*-')
+        '''DP 1st step: get all matching error array and corresponding dispairity value'''
+        vl = np.array([imleft[y,x] for x in pl[0]])
+        vr = np.array([imright[y,x] for x in pr[0]])
+        ''' use broacasting to get MxN array,
+        rows for sequential target points(in left image),
+        colums for candidate matching points (in right image)'''
+        Edata = np.abs(vec(vl)-vr)
+        M,N = (len(pl[0]), len(pr[1]))
+
+        vl = np.array(pl[0])    # x coordinates
+        vr = np.array(pr[0])
+        dis = vec(vl)-vr        # corresponding dispairity value for array Edata
+        Edata[dis<0] = np.inf   # negative disparity should not be considered
+
+        '''DP 2nd step: calculate regularise term'''
+        S = np.empty_like(Edata)
+        Best_rec = np.empty_like(Edata,'i8')
+        S[0] = Edata[0]
+        Best_rec[0] = range(N)
+        for i in xrange(1, M):
+            ''' non-smooth punishment '''
+            Ereg = np.abs(vec(dis[i]) - dis[i-1])    # NxN array, costs for dispairity jumps from last point to this point
+            Etotal = vec(S[i-1]) + 10*Ereg           # matching cost + jump cost
+            best_idx = np.nanargmin(Etotal, axis=0)   # Nx1 array, shortest path to current N choose
+            S[i] = Edata[i] + Etotal[range(N),best_idx] #
+            Best_rec[i] = best_idx
+        '''DP 3rd step: backtrace to readout the optimum'''
+
+        res = np.empty(M,'i8')
+        res[-1] = np.nanargmin(S[-1])
+        for i in xrange(M-1, 0, -1):
+            '''get the best at the final step'''
+            res[i-1] = Best_rec[i][res[i-1]]
+
+        plt.pause(0.01)
+        plt.waitforbuttonpress()
+
+
+
+
+ #%% one-by-one matching
     x_off, y_off = np.meshgrid(range(-2,3),range(-2,3))
     def calcPatchScore(y, x0, x_can):
         dl =  imleft[y+y_off,    x0+x_off]
@@ -142,7 +215,6 @@ if __name__ == "__main__":
             plt.pause(0.01)
             plt.waitforbuttonpress()
     pis(d_result)
-#%%
 
     v,u = np.where(d_result != 0)
     p3d = np.vstack([(u-0.5*w)/435.016,
