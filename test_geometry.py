@@ -53,7 +53,7 @@ if __name__ == "__main__":
         h,w = frames[0].shape[:2]
 
     fx,fy,cx,cy = K[0,0],K[1,1],K[0,2],K[1,2]
-    refid, curid = 8,0
+    refid, curid = 0,8
     Iref, G0, Z = frames[refid].astype('f')/255.0, wGc[refid].astype('f'), Zs[refid].astype('f')
     Icur, G1  = frames[curid].astype('f')/255.0, wGc[curid].astype('f')
     Iref3 = np.tile(Iref.ravel(), (3,1))
@@ -84,7 +84,7 @@ if __name__ == "__main__":
     vis.AddPointCloudActor(np.hstack([p0,p1,p2]).T)
     vis.AddLine([0,0,0], Trc)
 
-    p = (202,299)
+    p = (182,286)#(202,299)
     ps = np.array([(p[0]-cx)/fx,(p[1]-cy)/fy,1])*Z[p[1],p[0]]
     vis.AddLine([0,0,0], ps)
     vis.AddLine(Trc, ps)
@@ -142,6 +142,7 @@ if __name__ == "__main__":
     u, v = np.meshgrid(range(w),range(h))
     ub, vb = (u-cx)/fx, (v-cy)/fy
 
+
     mask_ref = reduce(np.logical_and,[grad>grad_threshold, u>1, v>1, u<w-2, v<h-2])
     puv_ref = np.array(np.where(mask_ref)).T
 
@@ -198,12 +199,18 @@ if __name__ == "__main__":
                 continue
             data_cur[int(np.round(a))][int(np.round(g))].append((p,az))
 #%% demo: points on the scanline
+        def trueProj(x,y):
+            pref = np.array([ub[y,x],vb[y,x],1.0])*Z[y,x]
+            pcur =  K.dot(Rcr.dot(pref)+Tcr)
+            pcur /= pcur[2]
+            return pcur[0],pcur[1]
+
         f = plt.figure(num='query')
         gs = plt.GridSpec(2,2)
         ar,ac = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
         ab = f.add_subplot(gs[1,:])
         ab.autoscale()
-        for a in range(ang_scaler.levels+1):
+        for a in range(40,ang_scaler.levels+1):
             ac.clear(); ar.clear();ab.clear()
             ar.imshow(Iref); ac.imshow(Icur)
             pr,pc = [],[]
@@ -212,18 +219,23 @@ if __name__ == "__main__":
                 for pt in ptt:
                     p = pt[0]
                     ac.plot(p[1],p[0],'r.')
-                    pc.append((double(pt[1]), Icur[p[0],p[1]]))
+                    pc.append((double(pt[1]), Icur[p[0],p[1]], p))
             for ptt in itertools.chain(data[a]):
                 for pt in ptt:
                     p = pt[0]
+                    tx,ty = trueProj(p[1],p[0])
+                    ac.plot(tx,ty,'g.')
                     ar.plot(p[1],p[0],'b.')
-                    pr.append((double(pt[1]), Iref[p[0],p[1]]))
-            pr.sort(key=lambda x:x[0])
-            pc.sort(key=lambda x:x[0])
-            pr = zip(*pr)
-            pc = zip(*pc)
-            ab.plot(pr[0],pr[1],'b*-')
-            ab.plot(pc[0],pc[1],'r*-')
+                    pr.append((double(pt[1]), Iref[p[0],p[1]], p))
+            if pc:
+                pc.sort(key=lambda x:x[0])
+                pc = zip(*pc)
+                ab.plot(pc[0],pc[1],'r*-')
+            if pr:
+                pr.sort(key=lambda x:x[0])
+                pr = zip(*pr)
+                ab.plot(pr[0],pr[1],'b*-')
+
             plt.pause(0.01)
             plt.waitforbuttonpress()
 #%% demo: single point on the other image
