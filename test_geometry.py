@@ -88,7 +88,6 @@ if __name__ == "__main__":
     ps = np.array([(p[0]-cx)/fx,(p[1]-cy)/fy,1])*Z[p[1],p[0]]
     vis.AddLine([0,0,0], ps)
     vis.AddLine(Trc, ps)
-
 #%% calculate the
     '''define vectors correspond to 4 image corners '''
     corners = [[0,0],[0,h],[w,h],[w,0]]
@@ -126,10 +125,6 @@ if __name__ == "__main__":
         pxyz = M.T.dot(pxyz)
         vis.AddPointCloudActor(pxyz.T)
 
-    def calcAngle(p, M):
-        pp = M.dot(p)
-        angle = np.rad2deg(np.arctan2(pp[1], pp[0]))
-        return angle+360 if angle<0 else angle
 
 #%% generate target point
     def calcGradient(im):
@@ -199,11 +194,11 @@ if __name__ == "__main__":
                 continue
             data_cur[int(np.round(a))][int(np.round(g))].append((p,az))
 #%% demo: points on the scanline
-        def trueProj(x,y):
-            pref = np.array([ub[y,x],vb[y,x],1.0])*Z[y,x]
-            pcur =  K.dot(Rcr.dot(pref)+Tcr)
-            pcur /= pcur[2]
-            return pcur[0],pcur[1]
+        def trueProj(x, y, G=cGr):
+            p0 = np.array([(x-cx)/fx, (y-cy)/fy, 1.0])*Z[int(y),int(x)]
+            p =  K.dot(G[0:3,0:3].dot(p0)+G[0:3,3])
+            p /= p[2]
+            return p[0],p[1]
 
         f = plt.figure(num='query')
         gs = plt.GridSpec(2,2)
@@ -238,63 +233,37 @@ if __name__ == "__main__":
 
             plt.pause(0.01)
             plt.waitforbuttonpress()
-#%% demo: single point on the other image
-    def calcEpl(p):
-        min_idepth, max_idepth = 0.0, np.inf
-        Pc0  = K.dot(Trc)
-        Pinf = K.dot(Rrc.dot(np.linalg.inv(K).dot(np.array([p[0],p[1],1]))))
 
-        a0 = (0.01 - Pinf[2])/Pc0[2]      # Pinf[2] + λ*Pc[2] > 0.01
-        a1 = (Pinf[0]-640*Pinf[2])/(640*Pc0[2]-Pc0[0])
-        a2 = (Pinf[1]-480*Pinf[2])/(480*Pc0[2]-Pc0[1])
-        max_idepth = np.min([a0, a1, a2])
-        Pc = Pinf + max_idepth*Pc0
-        if Pinf[2] < 0 or max_idepth < min_idepth:
-            print "Both points are invalid"
-        Pc = Pc/Pc[2]
-        Pinf = Pinf/Pinf[2]
+#%% exam the depth calculation
 
-        l = np.cross(Pinf.flat, Pc.flat)
-        l = l/np.linalg.norm(l[:2])
-        return Pc, Pinf, l, max_idepth
+    positive_range = lambda x: x if x>0 else x+2*np.pi
+    def calcAngle(x, y, G=None):
+        p0 = np.array([(x-cx)/fx, (y-cy)/fy, 1.0])
+        if not G is None:
+            p0 = G[0:3,0:3].dot(p0)
+        p = M.dot(p0)
+        theta = positive_range(np.arctan2(p[1], p[0]))
+        phi = positive_range(np.arctan2(np.sqrt(p[0]**2+p[1]**2), p[2]))
+        return theta, phi
 
+    def calcDepth(ar, ac):
+        B = np.linalg.norm(Trc)
+        c = np.pi-ac
+        b = ac-ar
+        return B*np.sin(c)/np.sin(b)
 
-
-    f,(al,ar) = plt.subplots(1,2,num='query')
-    start = 20000
-
-    for p,an,az,g in zip(puv_cur[start:], ang_cur[start:], ang_cur_z[start:], grad_cur[start:]):
-        an = int(np.round(an))
-        al.clear(); ar.clear()
-        al.imshow(Iref); ar.imshow(Icur)
-        ar.plot(p[1],p[0],'r.')
-
-        Pc, Pinf, _, max_idepth = calcEpl([p[1],p[0]])
-        al.plot(Pinf[0], Pinf[1],'r*')
-        if max_idepth>0:
-            al.plot([Pc[0],Pinf[0]], [Pc[1],Pinf[1]],'r')
-        for off in [0]:
-            a = an + off
-            if a<0 or a>ang_scaler.levels:
-                continue
-
-            pcan = data[a]
-            for ptt in itertools.chain(pcan):
-                for pt in ptt:
-                    if pt[1] < az:
-                        uv = pt[0]
-                        al.plot(uv[1],uv[0],'b.',ms=2)
-
-#            for off in [0,-1,1,2,-2]:
-#                pcan = data[a][np.clip(int(np.round(g))+off,0,255)]
-#                for pt in pcan:
-#                    if pt[1] < az:
-#                        uv = pt[0]
-#                        al.plot(uv[1],uv[0],'b.')
-        plt.pause(0.01)
-        plt.waitforbuttonpress()
-
-
-
-
-
+    def test_calcDepth():
+        f,a = plt.subplots(1, 1, num='test_depth')
+        a.imshow(sim(Iref, Icur))
+        while 1:
+            plt.pause(0.01)
+            pref = np.round(plt.ginput(1, timeout=-1)[0])
+            a.plot(pref[0], pref[1],'r.',ms=2)
+            pcur = trueProj(pref[0], pref[1])
+            a.plot(pcur[0]+640, pcur[1],'b.',ms=2)
+            a_ref = calcAngle(pref[0], pref[1])
+            a_cur = calcAngle(pcur[0], pcur[1], rGc)
+            prange = calcDepth(a_ref[1], a_cur[1])
+            P = snormalize(np.array([(pref[0]-cx)/fx, (pref[1]-cy)/fy, 1.0]))*prange
+            print 'Ground truth:%f, estimated:%f' % (P[2], Z[pref[1],pref[0]])
+    test_calcDepth()
