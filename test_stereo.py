@@ -58,6 +58,77 @@ if __name__ == "__main__":
     for x,y in zip(px[0], py[0]):
         """put pixels into bins base on their color"""
         data_l[y].append(x)
+
+#%% DP debug numpy
+    f = plt.figure(num='query')
+    gs = plt.GridSpec(2,2)
+    al,ar = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
+    ab = f.add_subplot(gs[1,:])
+    ab.autoscale()
+    vec = lambda x:np.reshape(x,(-1,1))
+    for y in range(125,h):
+        al.clear(); ar.clear();ab.clear()
+        al.imshow(imleft); ar.imshow(imright)
+        pl,pr = [],[]
+        '''obtain and plot the row data'''
+        for p in data_l[y]:
+            al.plot(p, y,'r.',ms=3)
+            pl.append((p, imleft[y, p], dI[0][y, p]))
+        for p in data[y]:
+            ar.plot(p, y,'b.',ms=3)
+            pr.append((p, imright[y,p], dI[1][y, p]))
+        if pl and pr:
+            pl.sort(key=lambda x:x[0])
+            pr.sort(key=lambda x:x[0])
+            pl = zip(*pl)
+            pr = zip(*pr)
+            '''DP 1st step: get all matching error array and corresponding
+               dispairity value, use broacasting to get MxN array,
+               rows for sequential target points(in left image),
+               colums for candidate matching points (in right image)'''
+            M,N = (len(pl[0]), len(pr[1]))
+            vl = np.array(pl[0])    # x coordinates
+            vr = np.array(pr[0])
+            dis = vec(vl)-vr        # corresponding dispairity value for array Edata
+
+#            vl = np.array(pl[2])
+#            vr = np.array(pr[2])
+#            Edata = 0.5*(vec(vl)-vr)**2
+            vl = np.array(pl[1])
+            vr = np.array(pr[1])
+            Edata = (vec(vl)-vr)**2
+            Edata[dis<0] = np.inf   # negative disparity should not be considered
+
+            '''DP 2nd step: calculate regularise term'''
+            S = np.empty_like(Edata)
+            Best_rec = np.empty_like(Edata,'i8')
+            S[0] = Edata[0]
+            Best_rec[0] = range(N)
+            for i in xrange(1, M):
+                ab.clear()
+                ab.plot(pr[0],vr,'b*-')
+                ab.plot(pl[0][:i+1],vl[:i+1],'r*-')
+
+                ''' non-smooth punishment '''
+                Ereg = (vec(dis[i]) - dis[i-1])**2/(pl[0][i]-pl[0][i-1])   # NxN array, costs for dispairity jumps from last point to this point
+                Etotal = S[i-1] + 10*Ereg           # matching cost + jump cost
+                best_idx = np.nanargmin(Etotal, axis=1)   # Nx1 array, For each value of x2 determine the best value of x1
+                S[i] = Edata[i] + Etotal[range(N),best_idx]
+                Best_rec[i] = best_idx
+
+                '''DP 3rd step: backtrace to readout the optimum'''
+                res = np.nanargmin(S[i]) # get the final best
+                ab.plot([pl[0][i],  pr[0][res]],
+                        [vl[i],vr[res]],'g-')
+                for j in xrange(i-1, -1, -1):
+                    '''given the state of parent step, lookup the waypoint to it'''
+                    res = Best_rec[j+1][res]
+                    ab.plot([pl[0][j],  pr[0][res]],
+                            [vl[j],vr[res]],'-')
+
+                plt.pause(0.01)
+                plt.waitforbuttonpress()
+
 #%% fast DP
     d_result = np.full_like(imleft, -1)
     vec = lambda x:np.reshape(x,(-1,1))
@@ -92,7 +163,7 @@ if __name__ == "__main__":
                 vl = np.array(pl[1])
                 vr = np.array(pr[1])
                 Edata += 0.5*(vec(vl)-vr)**2
-                Edata[dis<10] = np.inf   # negative disparity should not be considered
+                Edata[dis<0] = np.inf   # negative disparity should not be considered
 
                 '''DP 2nd step: calculate regularise term'''
                 S = np.empty_like(Edata)
@@ -102,7 +173,7 @@ if __name__ == "__main__":
                 for i in xrange(1, M):
                     ''' non-smooth punishment '''
                     Ereg = (vec(dis[i]) - dis[i-1])**2/(pl[0][i]-pl[0][i-1])   # NxN array, costs for dispairity jumps from last point to this point
-                    Etotal = S[i-1] + Ereg           # matching cost + jump cost
+                    Etotal = S[i-1] + 10*Ereg           # matching cost + jump cost
                     best_idx = np.nanargmin(Etotal, axis=1)   # Nx1 array, For each value of x2 determine the best value of x1
                     S[i] = Edata[i] + Etotal[range(N),best_idx] #
                     Best_rec[i] = best_idx
@@ -116,21 +187,32 @@ if __name__ == "__main__":
                     d_result[y,pl[0][j]] = pl[0][j]-pr[0][res]
             print y
     dpProcess()
+    exit
 #%%
-    v,u = np.where(d_result != -1)
+    v,u = np.where(d_result >10)
     p3d = np.vstack([(u-0.5*w)/435.016,
                      (v-0.5*h)/435.016,
                      np.ones(u.shape[0])
                      ]).astype('f')/d_result[v,u]*0.119554
     plotxyzrgb(np.vstack([p3d,np.tile(imleft[v,u],(3,1))]).T)
 
-#%% DP debug
+#%% DP debug class
     f = plt.figure(num='query')
     gs = plt.GridSpec(2,2)
     al,ar = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
     ab = f.add_subplot(gs[1,:])
     ab.autoscale()
     vec = lambda x:np.reshape(x,(-1,1))
+
+    class Cost:
+        def __init__(self, x, v, d_list, pre_idx=None, d_costs=None):
+            self.x = x
+            self.v = v
+            self.d_list = d_list
+            self.pre_idx = pre_idx
+            self.d_costs = d_costs
+
+
     for y in range(125,h):
         al.clear(); ar.clear();ab.clear()
         al.imshow(imleft); ar.imshow(imright)
@@ -138,61 +220,73 @@ if __name__ == "__main__":
         '''obtain and plot the row data'''
         for p in data_l[y]:
             al.plot(p, y,'r.',ms=3)
-            pl.append((p, imleft[y, p], dI[0][y, p]))
+            pl.append((p, imleft[y, p]/255.0, dI[0][y, p]))
         for p in data[y]:
             ar.plot(p, y,'b.',ms=3)
-            pr.append((p, imright[y,p], dI[1][y, p]))
+            pr.append((p, imright[y,p]/255.0, dI[1][y, p]))
         if pl and pr:
-            pl.sort(key=lambda x:x[0])
-            pr.sort(key=lambda x:x[0])
+
             pl = zip(*pl)
             pr = zip(*pr)
-            '''DP 1st step: get all matching error array and corresponding
-               dispairity value, use broacasting to get MxN array,
-               rows for sequential target points(in left image),
-               colums for candidate matching points (in right image)'''
-            M,N = (len(pl[0]), len(pr[1]))
-            vl = np.array(pl[0])    # x coordinates
-            vr = np.array(pr[0])
-            dis = vec(vl)-vr        # corresponding dispairity value for array Edata
 
-            vl = np.array(pl[2])
-            vr = np.array(pr[2])
-            Edata = 0.5*(vec(vl)-vr)**2
+            M = len(pl[0])
+
+            dis = vec(pl[0])-pr[0]        # corresponding dispairity value for array Edata
+
             vl = np.array(pl[1])
             vr = np.array(pr[1])
-            Edata += 0.5*(vec(vl)-vr)**2
-            Edata[dis<10] = np.inf   # negative disparity should not be considered
 
-            '''DP 2nd step: calculate regularise term'''
-            S = np.empty_like(Edata)
-            Best_rec = np.empty_like(Edata,'i8')
-            S[0] = Edata[0]
-            Best_rec[0] = range(N)
-            for i in xrange(1, M):
+            States = []
+            for p_idx in xrange(M):
                 ab.clear()
                 ab.plot(pr[0],vr,'b*-')
-                ab.plot(pl[0][:i+1],vl[:i+1],'r*-')
+                ab.plot(pl[0][:p_idx+1], vl[:p_idx+1],'r*-')
 
-                ''' non-smooth punishment '''
-                Ereg = (vec(dis[i]) - dis[i-1])**2/(pl[0][i]-pl[0][i-1])   # NxN array, costs for dispairity jumps from last point to this point
-                Etotal = S[i-1] + 10*Ereg           # matching cost + jump cost
-                best_idx = np.nanargmin(Etotal, axis=1)   # Nx1 array, For each value of x2 determine the best value of x1
-                S[i] = Edata[i] + Etotal[range(N),best_idx] #
-                Best_rec[i] = best_idx
+                mask =  dis[p_idx] > 10       # maximum disparity
+                d_idx = np.where(mask)[0]
+#                d_list = np.hstack((dis[p_idx, d_idx], -1))
+                d_list = dis[p_idx, d_idx]
+                x = pl[0][p_idx]
+                n = d_list.size
+                if n<1:
+                    continue
 
-                '''DP 3rd step: backtrace to readout the optimum'''
-                res = np.nanargmin(S[i]) # get the final best
-                ab.plot([pl[0][i],  pr[0][res]],
-                        [vl[i],vr[res]],'g-')
-                for j in xrange(i-1, -1, -1):
+                '''matching cost for each possible dispairty value of x2 '''
+#                Edata = np.hstack(((vl[p_idx] - vr[d_idx])**2, 0.04))
+                Edata = (vl[p_idx] - vr[d_idx])**2
+                if len(States) == 0:
+                    cur_state = Cost(x, vl[p_idx], d_list, range(n), Edata)
+                    States.append(cur_state)
+                else:
+                    '''For each value of x2 determine the cost with each value of x1 '''
+                    last_state = States[-1]
+                    weight = 1/(x - last_state.x)
+                    Ereg = (vec(d_list) - last_state.d_list)**2
+#                    Ereg[-1] = 0
+#                    Ereg[:,-1] = 0
+                    Etotal = last_state.d_costs + 0.1*Ereg* weight   # matching cost + jump cost
+
+                    '''choose the n best path'''
+                    best_idx = np.nanargmin(Etotal, axis=1)   # Nx1 array, For each value of x2 determine the best value of x1
+                    total_cost = Edata + Etotal[range(n), best_idx]
+
+                    cur_state = Cost(x, vl[p_idx], d_list, best_idx, total_cost)
+                    States.append(cur_state)
+
+                '''backtrace to readout the optimum'''
+                res = np.nanargmin(cur_state.d_costs)                # get the final best
+                for j in reversed(xrange(len(States))):
                     '''given the state of parent step, lookup the waypoint to it'''
-                    res = Best_rec[j+1][res]
-                    ab.plot([pl[0][j],  pr[0][res]],
-                            [vl[j],vr[res]],'-')
+                    if res != -1:
+                        ab.plot([States[j].x,  pr[0][res]],
+                                [States[j].v,     vr[res]],'g-')
+                    res = States[j].pre_idx[res]
 
                 plt.pause(0.01)
                 plt.waitforbuttonpress()
+        print y
+
+
 
 
 

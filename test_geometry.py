@@ -158,10 +158,10 @@ if __name__ == "__main__":
     ang_ref_z[ang_ref_z<0] += 360
 
     '''fill the data structure'''
-    data = [[[] for _ in range(grad_scaler.levels+1)] for _ in range(ang_scaler.levels+1)]
+    data = [[] for _ in range(ang_scaler.levels+1)]
     for p,a,az,g in zip(puv_ref, ang_ref,ang_ref_z, grad_ref):
         """put pixels into bins base on their color"""
-        data[int(np.round(a))][int(np.round(g))].append((p,az))
+        data[int(np.round(a))].append((tuple(p),double(az)))
 
     if 0:
         rec_im = np.zeros((361,361))
@@ -184,16 +184,16 @@ if __name__ == "__main__":
 
     grad_cur = grad[mask_cur]
     grad_cur = vec(grad_scaler(grad_cur))
-    import itertools
 
-    if 1:
-        data_cur = [[[] for _ in range(grad_scaler.levels+1)] for _ in range(ang_scaler.levels+1)]
-        for p,a,az,g in zip(puv_cur, ang_cur,ang_cur_z, grad_cur):
-            """put pixels into bins base on their color"""
-            if a > 360 or g > 255:
-                continue
-            data_cur[int(np.round(a))][int(np.round(g))].append((p,az))
+
+    data_cur = [[] for _ in range(ang_scaler.levels+1)]
+    for p,a,az,g in zip(puv_cur, ang_cur,ang_cur_z, grad_cur):
+        """put pixels into bins base on their color"""
+        if a > 360 or g > 255:
+            continue
+        data_cur[int(np.round(a))].append((tuple(p),double(az)))
 #%% demo: points on the scanline
+    if 1:
         def trueProj(x, y, G=cGr):
             p0 = np.array([(x-cx)/fx, (y-cy)/fy, 1.0])*Z[int(y),int(x)]
             p =  K.dot(G[0:3,0:3].dot(p0)+G[0:3,3])
@@ -205,23 +205,23 @@ if __name__ == "__main__":
         ar,ac = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
         ab = f.add_subplot(gs[1,:])
         ab.autoscale()
-        for a in range(40,ang_scaler.levels+1):
+        for a in range(65,ang_scaler.levels+1):
             ac.clear(); ar.clear();ab.clear()
             ar.imshow(Iref); ac.imshow(Icur)
             pr,pc = [],[]
 
-            for ptt in itertools.chain(data_cur[a]):
-                for pt in ptt:
-                    p = pt[0]
-                    ac.plot(p[1],p[0],'r.')
-                    pc.append((double(pt[1]), Icur[p[0],p[1]], p))
-            for ptt in itertools.chain(data[a]):
-                for pt in ptt:
-                    p = pt[0]
-                    tx,ty = trueProj(p[1],p[0])
-                    ac.plot(tx,ty,'g.')
-                    ar.plot(p[1],p[0],'b.')
-                    pr.append((double(pt[1]), Iref[p[0],p[1]], p))
+            for pt in data_cur[a]:
+                p = pt[0]
+                ac.plot(p[1],p[0],'r.')
+                pc.append((double(pt[1]), Icur[p], p))
+
+            for pt in data[a]:
+                p = pt[0]
+                tx,ty = trueProj(p[1],p[0])
+                ac.plot(tx,ty,'g.')
+                ar.plot(p[1],p[0],'b.')
+                pr.append((double(pt[1]), Iref[p], p))
+
             if pc:
                 pc.sort(key=lambda x:x[0])
                 pc = zip(*pc)
@@ -233,6 +233,99 @@ if __name__ == "__main__":
 
             plt.pause(0.01)
             plt.waitforbuttonpress()
+#%% DP stereo
+    f = plt.figure(num='query')
+    gs = plt.GridSpec(2,2)
+    al,ar = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
+    ab = f.add_subplot(gs[1,:])
+    ab.autoscale()
+    vec = lambda x:np.reshape(x,(-1,1))
+
+    class Cost:
+        def __init__(self, x, v, p, d_list, pre_idx=None, d_costs=None):
+            self.x = x
+            self.v = v
+            self.d_list = d_list
+            self.pre_idx = pre_idx
+            self.d_costs = d_costs
+            self.p = p
+
+    d_result = np.full_like(Icur, -1)
+    for y in range(ang_scaler.levels+1):
+        al.clear(); ar.clear();ab.clear()
+        al.imshow(Icur); ar.imshow(Iref)
+        pl,pr = [],[]
+        '''obtain and plot the row data'''
+        for p,az in data_cur[y]:
+            al.plot(p[1], p[0],'r.',ms=3)
+            pl.append((az, Icur[p],p))
+        for p,az in data[y]:
+            ar.plot(p[1], p[0],'b.',ms=3)
+            pr.append((az, Iref[p],p))
+        if pl and pr:
+            pl.sort(key=lambda x:x[0])
+            pr.sort(key=lambda x:x[0])
+            pl = zip(*pl)
+            pr = zip(*pr)
+
+            M = len(pl[0])
+
+            dis = vec(pl[0])-pr[0]        # corresponding dispairity value for array Edata
+
+            vl = np.array(pl[1])
+            vr = np.array(pr[1])
+
+            States = []
+            for p_idx in xrange(M):
+                ab.clear()
+                ab.plot(pr[0],vr,'b*-')
+                ab.plot(pl[0][:p_idx+1], vl[:p_idx+1],'r*-')
+
+                mask =  dis[p_idx] > 0       # maximum disparity
+                d_idx = np.where(mask)[0]
+#                d_list = np.hstack((dis[p_idx, d_idx], -1))
+                d_list = dis[p_idx, d_idx]
+                x = pl[0][p_idx]
+                n = d_list.size
+                if n<1:
+                    continue
+
+                '''matching cost for each possible dispairty value of x2 '''
+#                Edata = np.hstack(((vl[p_idx] - vr[d_idx])**2, 0.04))
+                Edata = (vl[p_idx] - vr[d_idx])**2
+                if len(States) == 0:
+                    cur_state = Cost(x, vl[p_idx], pl[2][p_idx], d_list, range(n), Edata)
+                    States.append(cur_state)
+                else:
+                    '''For each value of x2 determine the cost with each value of x1 '''
+                    last_state = States[-1]
+                    weight = 1/(x - last_state.x)
+                    Ereg = (vec(d_list) - last_state.d_list)**2
+#                    Ereg[-1] = 0
+#                    Ereg[:,-1] = 0
+                    Etotal = last_state.d_costs + 0.1*Ereg* weight   # matching cost + jump cost
+
+                    '''choose the n best path'''
+                    best_idx = np.nanargmin(Etotal, axis=1)   # Nx1 array, For each value of x2 determine the best value of x1
+                    total_cost = Edata + Etotal[range(n), best_idx]
+
+                    cur_state = Cost(x, vl[p_idx], pl[2][p_idx], d_list, best_idx, total_cost)
+                    States.append(cur_state)
+
+            '''backtrace to readout the optimum'''
+            res = np.nanargmin(cur_state.d_costs)                # get the final best
+            for j in reversed(xrange(len(States))):
+                '''given the state of parent step, lookup the waypoint to it'''
+                d_result[pl[2][p_idx]] = res
+                ab.plot([States[j].x,  pr[0][res]],
+                        [States[j].v,     vr[res]],'g-')
+                res = States[j].pre_idx[res]
+
+#                plt.pause(0.01)
+#                plt.waitforbuttonpress()
+        print y
+    pf()
+    pis(d_result)
 
 #%% exam the depth calculation
 
