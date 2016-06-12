@@ -25,9 +25,14 @@ if __name__ == "__main__":
     normalize = lambda x:x/np.linalg.norm(x)
     plt.ion()
     #%% get good pixels
+    def calcGradient(im):
+        dx,dy = np.gradient(im)
+        return np.sqrt(dx**2+dy**2)
+
+
     dI,px,py,pcolor,pvm = [],[],[],[],[]
     for i,im in enumerate([imleft, imright]):
-        d = scipy.ndimage.filters.gaussian_gradient_magnitude(im,1)
+        d = calcGradient(im)
         d_abs = np.abs(d)
         valid_mask = d_abs>np.percentile(d_abs,80)
         dI.append( d.copy() )
@@ -59,6 +64,15 @@ if __name__ == "__main__":
         """put pixels into bins base on their color"""
         data_l[y].append(x)
 
+    x_off, y_off = np.meshgrid(range(-2,3),range(-2,3))
+    def calcPatchScore(y, x0, x_can):
+        dl =  imleft[y+y_off,    x0+x_off]
+        dr = imright[y+y_off, x_can+x_off]
+#        ncc = 1-np.dot(normalize(dl.ravel()-dl.mean()),
+#                     normalize(dr.ravel()-dr.mean()))
+        ssd = np.linalg.norm((dl-dr).ravel())/25
+        return ssd
+
 #%% DP debug class
     f = plt.figure(num='query')
     gs = plt.GridSpec(2,2)
@@ -76,7 +90,7 @@ if __name__ == "__main__":
             self.d_costs = d_costs
 
     debug = False
-    d_result = np.full_like(imleft, -1)
+#    d_result = np.full_like(imleft, -1)
 
     for y in range(0,h):
 #        al.clear(); ar.clear();ab.clear()
@@ -85,10 +99,10 @@ if __name__ == "__main__":
         '''obtain and plot the row data'''
         for p in data_l[y]:
 #            al.plot(p, y,'r.',ms=3)
-            pl.append((p, imleft[y, p]/255.0, dI[0][y, p]))
+            pl.append((p, imleft[y, p], dI[0][y, p]))
         for p in data[y]:
 #            ar.plot(p, y,'b.',ms=3)
-            pr.append((p, imright[y,p]/255.0, dI[1][y, p]))
+            pr.append((p, imright[y,p], dI[1][y, p]))
         if pl and pr:
 
             pl = zip(*pl)
@@ -115,7 +129,9 @@ if __name__ == "__main__":
                 n = d_list.size
 
                 '''matching cost for each possible dispairty value of x2 '''
-                Edata = np.hstack([10, vl[p_idx] - vr[d_idx]])**2      # 10 for occlusion cost
+#                Edata = np.hstack([10, vl[p_idx] - vr[d_idx]])**2      # 10 for occlusion cost
+                cost = [10]+[calcPatchScore(y,x, x-d_can) for d_can in d_list[1:]]
+                Edata = np.array(cost)
 
                 if len(States) == 0:
                     cur_state = Cost(x, vl[p_idx], d_list, range(n), Edata)
@@ -128,11 +144,11 @@ if __name__ == "__main__":
                     Ereg = np.where(jumps<2, 1, 5)
                     Ereg[0] = 0        # from non-occluded to occluded
                     Ereg[:,0] = 0      # from occluded to non-occluded
-                    Etotal = last_state.d_costs + 10*Ereg   # matching cost + jump cost
+                    Etotal = last_state.d_costs + 100*Ereg   # matching cost + jump cost
 
                     '''choose the n best path'''
                     best_idx = np.nanargmin(Etotal, axis=1)   # Nx1 array, For each value of x2 determine the best value of x1
-                    total_cost = Edata + Etotal[1:n, best_idx]
+                    total_cost = Edata + Etotal[range(n), best_idx]
 
                     cur_state = Cost(x, vl[p_idx], d_list, best_idx, total_cost)
                     States.append(cur_state)
@@ -144,14 +160,14 @@ if __name__ == "__main__":
                 if res != 0:
 #                    ab.plot([States[j].x,  pr[0][res-1]],
 #                            [States[j].v,     vr[res-1]],'g-')
-                    d_result[y,States[j].x] = res-1
+                    d_result[y,States[j].x] = States[j].x - pr[0][res-1]
                 res = States[j].pre_idx[res]
 
-            plt.pause(0.01)
-            plt.waitforbuttonpress()
+#            plt.pause(0.01)
+#            plt.waitforbuttonpress()
         print y
 
-#%%
+
     v,u = np.where(d_result >10)
     p3d = np.vstack([(u-0.5*w)/435.016,
                      (v-0.5*h)/435.016,

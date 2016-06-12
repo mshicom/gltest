@@ -161,7 +161,8 @@ if __name__ == "__main__":
     data = [[] for _ in range(ang_scaler.levels+1)]
     for p,a,az,g in zip(puv_ref, ang_ref,ang_ref_z, grad_ref):
         """put pixels into bins base on their color"""
-        data[int(np.round(a))].append((tuple(p),double(az)))
+        v_int = np.round(a)
+        data[int(v_int)].append((tuple(p),double(az),double(a - v_int)))
 
     if 0:
         rec_im = np.zeros((361,361))
@@ -191,7 +192,8 @@ if __name__ == "__main__":
         """put pixels into bins base on their color"""
         if a > 360 or g > 255:
             continue
-        data_cur[int(np.round(a))].append((tuple(p),double(az)))
+        v_int = np.round(a)
+        data_cur[int(v_int)].append((tuple(p),double(az), double(a - v_int)))
 #%% demo: points on the scanline
     if 1:
         def trueProj(x, y, G=cGr):
@@ -213,14 +215,14 @@ if __name__ == "__main__":
             for pt in data_cur[a]:
                 p = pt[0]
                 ac.plot(p[1],p[0],'r.')
-                pc.append((double(pt[1]), Icur[p], p))
+                pc.append((double(pt[1]), Icur[p], p, pt[2]))
 
             for pt in data[a]:
                 p = pt[0]
                 tx,ty = trueProj(p[1],p[0])
                 ac.plot(tx,ty,'g.')
                 ar.plot(p[1],p[0],'b.')
-                pr.append((double(pt[1]), Iref[p], p))
+                pr.append((double(pt[1]), Iref[p], p, pt[2]))
 
             if pc:
                 pc.sort(key=lambda x:x[0])
@@ -251,7 +253,7 @@ if __name__ == "__main__":
             self.p = p
 
     d_result = np.full_like(Icur, -1)
-    for y in range(ang_scaler.levels+1):
+    for y in range(65,ang_scaler.levels+1):
         al.clear(); ar.clear();ab.clear()
         al.imshow(Icur); ar.imshow(Iref)
         pl,pr = [],[]
@@ -312,17 +314,17 @@ if __name__ == "__main__":
                     cur_state = Cost(x, vl[p_idx], pl[2][p_idx], d_list, best_idx, total_cost)
                     States.append(cur_state)
 
-            '''backtrace to readout the optimum'''
-            res = np.nanargmin(cur_state.d_costs)                # get the final best
-            for j in reversed(xrange(len(States))):
-                '''given the state of parent step, lookup the waypoint to it'''
-                d_result[pl[2][p_idx]] = res
-                ab.plot([States[j].x,  pr[0][res]],
-                        [States[j].v,     vr[res]],'g-')
-                res = States[j].pre_idx[res]
+                '''backtrace to readout the optimum'''
+                res = np.nanargmin(cur_state.d_costs)                # get the final best
+                for j in reversed(xrange(len(States))):
+                    '''given the state of parent step, lookup the waypoint to it'''
+                    d_result[pl[2][p_idx]] = res
+                    ab.plot([States[j].x,  pr[0][res]],
+                            [States[j].v,     vr[res]],'g-')
+                    res = States[j].pre_idx[res]
 
-#                plt.pause(0.01)
-#                plt.waitforbuttonpress()
+                plt.pause(0.01)
+                plt.waitforbuttonpress()
         print y
     pf()
     pis(d_result)
