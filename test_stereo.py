@@ -118,8 +118,8 @@ if __name__ == "__main__":
 
             dis = vec(pl[0])-pr[0]        # corresponding dispairity value for array Edata
 
-            vl = np.array(pl[1])
-            vr = np.array(pr[1])
+            vl = np.array(pl[1],'i')
+            vr = np.array(pr[1],'i')
 
             States = []
             for p_idx in xrange(M):
@@ -187,6 +187,75 @@ if __name__ == "__main__":
     plotxyzrgb(np.vstack([p3d,np.tile(imleft[v,u],(3,1))]).T)
     exit
 
+#%%
+    from scipy import weave
+
+
+    def fast_dp(y, l_pts, r_pts):
+        lim, rim = imleft,imright
+        res = np.zeros_like(l_pts)
+
+        scode = r"""
+            #include <vector>
+            #include <iostream>
+            #include <memory>
+            struct Cost
+            {
+                int x;
+                int v;
+                std::vector<int> d_list;
+                std::vector<int> pre_idx;
+                std::vector<float> d_costs;
+
+                Cost(int x, int v)
+                :x(x), v(v) {};
+
+                Cost() {};
+            };
+            typedef std::shared_ptr<Cost> ptrCost;
+        """
+        code = r"""
+            int M = Nl_pts[0];
+            int N = Nr_pts[0];
+            std::vector< ptrCost > states;
+            states.reserve(M);
+            for (int i=0; i<M; i++)
+            {
+                ptrCost p = std::make_shared<Cost>();
+                states.push_back(p);
+                int x = L_PTS1(i);
+                p->x = x;
+                p->v = LIM2(y, L_PTS1(i));  // pixel intensity
+                p->d_list.push_back(0);		// 0 means occlusion
+
+                // loop through all candidate points
+                for (int j=0; j<N; j++)
+                	int x_can = R_PTS1(j);
+                	int disparity = x-x_can;
+                	// discard points with negative or too small disparity(i.e too far away)
+                	if (disparity<10)
+                		break;
+                	else
+                	{
+                		// fisrt calc
+                	}
+
+
+            }
+
+            for (int i=0; i<M; i++)
+                RES1(i) = states[i]->v;
+
+        """
+        weave.inline(code,
+                   ['lim', 'rim', 'l_pts', 'r_pts', 'y', 'res'],
+                    support_code = scode,
+                    compiler='gcc',
+                    extra_compile_args=['-std=gnu++11'],
+                    verbose=1  )
+        print res-imleft[y,l_pts]
+        return res
+    res=fast_dp(y, vl, vr)
 
 #%% DP debug numpy
     f = plt.figure(num='query')
