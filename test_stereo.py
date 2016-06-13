@@ -32,7 +32,8 @@ if __name__ == "__main__":
 
     dI,px,py,pcolor,pvm = [],[],[],[],[]
     for i,im in enumerate([imleft, imright]):
-        d = calcGradient(im)
+#        d = calcGradient(im)
+        d = scipy.ndimage.filters.gaussian_gradient_magnitude(im,1)
         d_abs = np.abs(d)
         valid_mask = d_abs>np.percentile(d_abs,80)
         dI.append( d.copy() )
@@ -64,14 +65,7 @@ if __name__ == "__main__":
         """put pixels into bins base on their color"""
         data_l[y].append(x)
 
-    x_off, y_off = np.meshgrid(range(-2,3),range(-2,3))
-    def calcPatchScore(y, x0, x_can):
-        dl =  imleft[y+y_off,    x0+x_off]
-        dr = imright[y+y_off, x_can+x_off]
-#        ncc = 1-np.dot(normalize(dl.ravel()-dl.mean()),
-#                     normalize(dr.ravel()-dr.mean()))
-        ssd = np.linalg.norm((dl-dr).ravel())/25
-        return ssd
+
 
 #%% DP debug class
     f = plt.figure(num='query')
@@ -89,19 +83,31 @@ if __name__ == "__main__":
             self.pre_idx = pre_idx
             self.d_costs = d_costs
 
-    debug = False
-#    d_result = np.full_like(imleft, -1)
+    debug = True
+    d_result = np.full_like(imleft, -1)
 
-    for y in range(0,h):
-#        al.clear(); ar.clear();ab.clear()
-#        al.imshow(imleft); ar.imshow(imright)
+    x_off, y_off = np.meshgrid(range(-1,2),range(-1,2))
+    def calcPatchScore(y, x0, x_can):
+        dl =  imleft[y+y_off,    x0+x_off]
+        dr = imright[y+y_off, x_can+x_off]
+#        ncc = 1-np.dot(normalize(dl.ravel()-dl.mean()),
+#                     normalize(dr.ravel()-dr.mean()))
+        ssd = np.linalg.norm((dl-dr).ravel())/9
+        return ssd
+
+    for y in range(120,h):
+        if debug:
+            al.clear(); ar.clear();ab.clear()
+            al.imshow(imleft); ar.imshow(imright)
         pl,pr = [],[]
         '''obtain and plot the row data'''
         for p in data_l[y]:
-#            al.plot(p, y,'r.',ms=3)
+            if debug:
+                al.plot(p, y,'r.',ms=3)
             pl.append((p, imleft[y, p], dI[0][y, p]))
         for p in data[y]:
-#            ar.plot(p, y,'b.',ms=3)
+            if debug:
+                ar.plot(p, y,'b.',ms=3)
             pr.append((p, imright[y,p], dI[1][y, p]))
         if pl and pr:
 
@@ -117,9 +123,10 @@ if __name__ == "__main__":
 
             States = []
             for p_idx in xrange(M):
-#                ab.clear()
-#                ab.plot(pr[0],vr,'b*-')
-#                ab.plot(pl[0][:p_idx+1], vl[:p_idx+1],'r*-')
+                if debug:
+                    ab.clear()
+                    ab.plot(pr[0],vr,'b*-')
+                    ab.plot(pl[0][:p_idx+1], vl[:p_idx+1],'r*-')
 
                 mask =  dis[p_idx] > 10       # maximum disparity
                 d_idx = np.where(mask)[0]
@@ -129,7 +136,8 @@ if __name__ == "__main__":
                 n = d_list.size
 
                 '''matching cost for each possible dispairty value of x2 '''
-#                Edata = np.hstack([10, vl[p_idx] - vr[d_idx]])**2      # 10 for occlusion cost
+#                Edata = np.hstack([10, vl[p_idx] - vr[d_idx]])**2
+#                Edata = np.hstack([30, np.abs(vl[p_idx] - vr[d_idx])])      # 10 for occlusion cost
                 cost = [10]+[calcPatchScore(y,x, x-d_can) for d_can in d_list[1:]]
                 Edata = np.array(cost)
 
@@ -142,6 +150,7 @@ if __name__ == "__main__":
                     weight = 1/(x - last_state.x)
                     jumps = vec(d_list) - last_state.d_list
                     Ereg = np.where(jumps<2, 1, 5)
+                    Ereg[jumps==0] = 0
                     Ereg[0] = 0        # from non-occluded to occluded
                     Ereg[:,0] = 0      # from occluded to non-occluded
                     Etotal = last_state.d_costs + 100*Ereg   # matching cost + jump cost
@@ -158,13 +167,15 @@ if __name__ == "__main__":
             for j in reversed(xrange(len(States))):
                 '''given the state of parent step, lookup the waypoint to it'''
                 if res != 0:
-#                    ab.plot([States[j].x,  pr[0][res-1]],
-#                            [States[j].v,     vr[res-1]],'g-')
+                    if debug:
+                         ab.plot([States[j].x,  pr[0][res-1]],
+                                 [States[j].v,     vr[res-1]],'g-')
                     d_result[y,States[j].x] = States[j].x - pr[0][res-1]
                 res = States[j].pre_idx[res]
 
-#            plt.pause(0.01)
-#            plt.waitforbuttonpress()
+            if debug:
+                plt.pause(0.01)
+                plt.waitforbuttonpress()
         print y
 
 
