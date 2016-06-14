@@ -65,9 +65,270 @@ if __name__ == "__main__":
         """put pixels into bins base on their color"""
         data_l[y].append(x)
 
+#%%
+    from scipy import weave
+
+    lim, rim = imleft.astype('u1').copy(),imright.astype('u1').copy()
+    def fast_dp(y, l_pts, r_pts):
+
+        res = np.full_like(l_pts, -1)
+
+        scode = r"""
+            #include <vector>
+            #include <iostream>
+            #include <fstream>
+            #include <memory>
+            #include <cmath>
+            #include <limits>
+            #include <cstddef>
+            #include <cstdio>
+            #include <chrono>
+            #define CAP  512
+            struct Cost
+            {
+               int x;
+               int v;
+               std::vector<int> d_list;
+               std::vector<size_t> pre_idx;
+               std::vector<float> d_costs;
+
+               Cost(int x, int v)
+               :x(x), v(v) {}
+
+               Cost() {
+                   d_list.reserve(CAP);
+                   pre_idx.reserve(CAP);
+                   d_costs.reserve(CAP);
+               }
+            };
+            typedef std::shared_ptr<Cost> ptrCost;
+        """
+        code = r"""
+            const float Penalty1 = 10.0;
+            const float Penalty2 = 30.0;
+            const float Penalty_Occ = 20;
+            const int min_disparity = 10;
+            const int max_disparity = 256;
+
+            auto start = std::chrono::system_clock::now();
+
+            size_t M = Nl_pts[0];
+            size_t N = Nr_pts[0];
+            std::vector< ptrCost > states;
+            states.reserve(M);
+
+            // I. forward steps
+            // special care for the first point, no regularization term
+            size_t target_idx = 0;
+            {
+                ptrCost p_current_state = std::make_shared<Cost>();
+                int x = L_PTS1(target_idx);               // pixel coordinate
+                float v = LIM2(y, x);    // pixel intensity
+                p_current_state->x = x;
+//std::cout<< "[" << x << "]:-----------------\n";
+
+                // 1. setup occlusion/no-match as the first candidate.
+                {
+                    p_current_state->d_list.push_back(0);
+                    p_current_state->d_costs.push_back(Penalty_Occ);    // constant cost for Occulsion assumption
+                    p_current_state->pre_idx.push_back(0);
+//std::cout<< '\t' << 0 <<'['<< Penalty_Occ <<"] \t" ;
+                }
+
+                // 2. calculate the N candiate paths with corresponding optimum cost
+                for (size_t candidate_idx=1; candidate_idx<N+1; candidate_idx++)
+                {
+                    int x_can = R_PTS1(candidate_idx-1);
+                    int disparity = x-x_can;
+
+                    // discard points with negative or too small disparity(i.e too far away).
+                    // Terminate the loop once the condition breaks, assuming the point-list
+                    // are already ordered in x coordinate,
+                    if (disparity>max_disparity)
+                        continue;
+                    else if (disparity<min_disparity)
+                        break;
+
+                    // 2a. matching cost for this disparity value
+                    int v_can = RIM2(y, x_can);
+                    float Edata = std::fabs(v - v_can);
+//std::cout<< candidate_idx <<'['<< Edata <<"] \t" ;
+
+                    p_current_state->d_list.push_back(disparity);
+                    p_current_state->d_costs.push_back(Edata);
+                    p_current_state->pre_idx.push_back(candidate_idx);
+                }
+//std::cout<< std::endl;
+
+                // 3. done with this target pixel and move on the next
+                states.push_back(p_current_state);
+            }
+
+            for (target_idx=1; target_idx<M; target_idx++)
+            {
+                ptrCost p_last_state = states.back();
+                ptrCost p_current_state = std::make_shared<Cost>();
+
+                int x = L_PTS1(target_idx);               // pixel coordinate
+                float v = LIM2(y, x);    // pixel intensity
+                p_current_state->x = x;
+                p_current_state->v = v;
+                // 1. setup occlusion/no-match as the first candidate, if there are no
+                // valid candiate matching points, then this will be the only option.
+                {
+                    float min_Edata_last = p_last_state->d_costs[0];
+                    size_t min_E_idx = 0;
+
+                    for (size_t k=1; k<p_last_state->d_list.size(); k++)
+                    {
+                        float Edata_last = p_last_state->d_costs[k];  // cummulated path cost
+                        if(Edata_last < min_Edata_last){
+                            min_Edata_last = Edata_last;
+                            min_E_idx = k;
+                        }
+                    }
+                    p_current_state->d_list.push_back(0);
+                    p_current_state->d_costs.push_back(min_Edata_last + Penalty_Occ); // constant cost for Occulsion assumption,no penalty for state changes to occulsion
+                    p_current_state->pre_idx.push_back(min_E_idx);
+
+                }
+                // 2. calculate the N-1 candiate paths with corresponding optimum cost
+                for (size_t candidate_idx=1; candidate_idx<N+1; candidate_idx++) {
+                    int x_can = R_PTS1(candidate_idx-1);
+                    int disparity = x-x_can;
+
+                    // discard points with negative or too small disparity(i.e too far away).
+                    // Assuming the point-list are ordered in x coordinate, terminate the
+                    // loop once the condition breaks
+                    if (disparity>max_disparity)
+                        continue;
+                    else if (disparity<min_disparity)
+                        break;
+
+
+                    // 2a. matching cost for this disparity value
+                    int v_can = RIM2(y, x_can);
+                    float Edata = std::fabs(v - v_can);
+//std::cout<< "\t disparity:" << disparity << '-' << "cost:" << Edata << std::endl;
+//std::cout<< "\t\t";
+                    // 2b. choose a optimum path from state(every possible last disparity) to this disparity
+                    float min_Etotal_last = p_last_state->d_costs[0];   // again, the fisrt one for occulsion/no-match
+                    size_t min_E_idx = 0;                  // occulsion = default
+//std::cout<< 0<< '['<< min_Etotal_last<<"]\t";
+                    for (size_t k=1; k<p_last_state->d_list.size(); k++) {
+                        int disparity_last = p_last_state->d_list[k];
+                        int xdiff = std::abs(x - p_last_state->x);
+                        int diff = std::abs(disparity - disparity_last);
+                        float Ereg = (diff == 0)? 0 :                  // disparity jump penalty
+                                     (diff  < 2)? Penalty1 : Penalty2;
+                        float Etotal = p_last_state->d_costs[k] + Ereg;  // cummulated path cost
+//std::cout<< disparity_last<< '['<< Etotal<<"]\t";
+                        if(Etotal < min_Etotal_last) {
+                            min_Etotal_last = Etotal;
+                            min_E_idx = k;
+                        }
+                    }
+//std::cout<< "\t min:No." << min_E_idx << '('<<p_last_state->d_list[min_E_idx] <<','<< min_Etotal_last << ')' << std::endl;
+
+                    // 2c. only keep the optimal path from last state to this disparity value
+                    p_current_state->d_list.push_back(disparity);
+                    p_current_state->d_costs.push_back(Edata + min_Etotal_last);
+                    p_current_state->pre_idx.push_back(min_E_idx);
+
+                }
+//std::cout<< std::endl;
+                // 3. done with this target pixel and move on the next
+                states.push_back(p_current_state);
+            }
+
+            // II. backtrace step
+            // 1. best score in the final step
+            ptrCost p_last_state = states.back();
+            float E_min = std::numeric_limits<float>::max();
+            size_t min_path_idx = 0;
+            for (size_t candidate_idx = 0; candidate_idx < p_last_state->d_costs.size(); candidate_idx++)
+            {
+                float cost = p_last_state->d_costs[candidate_idx];
+                if(E_min > cost)
+                {
+                    E_min = cost;
+                    min_path_idx = candidate_idx;
+                }
+            }
+
+            // 2.
+            for (size_t state_idx=M-1; state_idx+1>0; state_idx--)
+            {
+                RES1(state_idx) = states[state_idx]->d_list[min_path_idx];
+
+                // corresponding path from previous step
+                min_path_idx = states[state_idx]->pre_idx[min_path_idx];
+            }
+             auto duration = std::chrono::duration<double>
+                            (std::chrono::system_clock::now() - start);
+
+
+//std::cout <<"runtime:" <<duration.count() << "s" <<std::endl;
+
+        """
+
+        test_code = r"""
+
+            size_t M = Nl_pts[0];
+            size_t N = Nr_pts[0];
+            std::vector< ptrCost > states;
+
+            for (int target_idx=0; target_idx<M; target_idx++)
+            {
+                int x = L_PTS1(target_idx);               // pixel coordinate
+                float v = LIM2(y, x);    // pixel intensity
+
+                RES1(target_idx) = v;
+
+            }
+
+        """
+#        import timeit
+#        start = timeit.default_timer()
+        weave.inline(code,
+                   ['lim', 'rim', 'l_pts', 'r_pts', 'y', 'res'],
+                    support_code = scode,
+                    compiler='gcc',
+                    extra_compile_args=['-std=gnu++11 -O3'],
+                    verbose=2  )
+#        end = timeit.default_timer()
+#        print 'fps:',1.0/(end - start)
+        print res
+        return res
+
+    debug = True
+    d_result = np.full_like(imleft, -1)
+
+    f = plt.figure(num='query')
+    gs = plt.GridSpec(2,2)
+    al,ar = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
+    ab = f.add_subplot(gs[1,:])
+    ab.autoscale()
+    for y in [120]:
+        if data_l[y] and data[y]:
+            l_pts, r_pts = np.array(data_l[y]), np.array(data[y])
+            res = fast_dp(y, l_pts, r_pts)
+            d_result[y, l_pts] = res
+            if debug:
+                al.clear(); ar.clear();ab.clear()
+                al.imshow(imleft); ar.imshow(imright)
+                ab.plot(l_pts, lim[y, l_pts],'r*-')
+                ab.plot(r_pts, rim[y, r_pts],'b*-')
+                pts0 = l_pts[res!=0]
+                pts1 = pts0 - res[res!=0]
+                ab.plot([pts0,         pts1],
+                        [lim[y, pts0], rim[y, pts1]],'g-')
+
 
 
 #%% DP debug class
+    exit(0)
+
     f = plt.figure(num='query')
     gs = plt.GridSpec(2,2)
     al,ar = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
@@ -148,7 +409,7 @@ if __name__ == "__main__":
                     '''For each value of x2 determine the cost with each value of x1 '''
                     last_state = States[-1]
                     weight = 1/(x - last_state.x)
-                    jumps = vec(d_list) - last_state.d_list
+                    jumps = np.abs(vec(d_list) - last_state.d_list)
                     Ereg = np.where(jumps<2, 1, 5)
                     Ereg[jumps==0] = 0
                     Ereg[0] = 0        # from non-occluded to occluded
@@ -185,77 +446,9 @@ if __name__ == "__main__":
                      np.ones(u.shape[0])
                      ]).astype('f')/d_result[v,u]*0.119554
     plotxyzrgb(np.vstack([p3d,np.tile(imleft[v,u],(3,1))]).T)
-    exit
-
-#%%
-    from scipy import weave
+    exit(0)
 
 
-    def fast_dp(y, l_pts, r_pts):
-        lim, rim = imleft,imright
-        res = np.zeros_like(l_pts)
-
-        scode = r"""
-            #include <vector>
-            #include <iostream>
-            #include <memory>
-            struct Cost
-            {
-                int x;
-                int v;
-                std::vector<int> d_list;
-                std::vector<int> pre_idx;
-                std::vector<float> d_costs;
-
-                Cost(int x, int v)
-                :x(x), v(v) {};
-
-                Cost() {};
-            };
-            typedef std::shared_ptr<Cost> ptrCost;
-        """
-        code = r"""
-            int M = Nl_pts[0];
-            int N = Nr_pts[0];
-            std::vector< ptrCost > states;
-            states.reserve(M);
-            for (int i=0; i<M; i++)
-            {
-                ptrCost p = std::make_shared<Cost>();
-                states.push_back(p);
-                int x = L_PTS1(i);
-                p->x = x;
-                p->v = LIM2(y, L_PTS1(i));  // pixel intensity
-                p->d_list.push_back(0);		// 0 means occlusion
-
-                // loop through all candidate points
-                for (int j=0; j<N; j++)
-                	int x_can = R_PTS1(j);
-                	int disparity = x-x_can;
-                	// discard points with negative or too small disparity(i.e too far away)
-                	if (disparity<10)
-                		break;
-                	else
-                	{
-                		// fisrt calc
-                	}
-
-
-            }
-
-            for (int i=0; i<M; i++)
-                RES1(i) = states[i]->v;
-
-        """
-        weave.inline(code,
-                   ['lim', 'rim', 'l_pts', 'r_pts', 'y', 'res'],
-                    support_code = scode,
-                    compiler='gcc',
-                    extra_compile_args=['-std=gnu++11'],
-                    verbose=1  )
-        print res-imleft[y,l_pts]
-        return res
-    res=fast_dp(y, vl, vr)
 
 #%% DP debug numpy
     f = plt.figure(num='query')
