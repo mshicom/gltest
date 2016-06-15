@@ -16,6 +16,8 @@ def sim(*arg,**kwarg):
 import scipy
 import scipy.ndimage
 from vtk_visualizer import *
+from scipy import weave
+
 
 if __name__ == "__main__":
     imleft = plt.imread('./left0000.jpg')[:,:,0].astype('f').copy()
@@ -66,39 +68,123 @@ if __name__ == "__main__":
         data_l[y].append(x)
     d_result = np.full_like(imleft, -1)
 
-#%% DP debug numpy
+#%% DP 2nd
+    def fast_dp2(y, l_pts, r_pts, occ_cost):
+        M, N = l_pts.size, r_pts.size
+
+        dis = vec(l_pts)-r_pts        # corresponding dispairity value for array Edata
+        dis_mask = np.logical_or(dis<10, dis>160)
+
+        vl, vr = imleft[y, pl].astype('u1'), imright[y,pr].astype('u1')
+        Edata = np.empty((M,N), 'f')
+        Edata = np.abs(vec(vl)-vr)
+        Edata[dis_mask] = 65530   # negative disparity should not be considered
+        result = np.zeros_like(pl,'i2')
+        code = r"""
+            size_t M = Nl_pts[0];
+            size_t N = Nr_pts[0];
+            size_t N1 = N+1;
+            auto start = std::chrono::system_clock::now();
+
+            auto Costs = new float[(M+1)*(N+1)]();  // with 0 initialization
+            auto Bests = new unsigned char[M*N];
+
+            #define C(y,x)  Costs[(y)*N1+(x)]
+            #define B(y,x)  Bests[(y)*N+(x)]
+
+            for (size_t m=0; m<M; m++)
+                for(size_t n=0; n<N; n++ )
+                {
+                    float c1 = C(m, n) + EDATA2(m,n);
+                    float c2 = C(m, n+1) + occ_cost;
+                    float c3 = C(m+1, n) + occ_cost;
+
+                    float c_min = c1;
+                    unsigned char  c_min_id = 0;
+
+                    if(c2<c_min) { c_min=c2; c_min_id=1; }
+                    if(c3<c_min) { c_min=c3; c_min_id=2; }
+
+                    C(m+1, n+1) = c_min;
+                    B(m,n) = c_min_id;
+                }
+
+            size_t l=M-1, r=N-1;
+            while (l!=0 && r!=0)
+                switch(B(l,r)) {
+                    case 0:
+                        l -= 1; r -= 1;
+                        RESULT1(l) = r;
+                        break;
+                    case 1:
+                        l -= 1; break;
+                    case 2:
+                        r -= 1; break;
+                    default:
+                        std::cerr << "unknown value of x";
+                        goto exit_loop;
+                }
+            exit_loop: ;
+
+            delete[] Costs;
+            delete[] Bests;
+            #undef C(y,x)
+            #undef B(y,x)
+            auto duration = std::chrono::duration<double>
+                (std::chrono::system_clock::now() - start);
+            std::cout <<"runtime:" <<duration.count() << "s" <<std::endl;
+        """
+        weave.inline(code,
+                   ['l_pts', 'r_pts', 'Edata', 'occ_cost','result'],
+                    compiler='gcc',headers=['<chrono>'],
+                    extra_compile_args=['-std=gnu++11 -O3'],
+                    verbose=2  )
+        return result
+
+    debug = False
+    if debug:
         f = plt.figure(num='query')
         gs = plt.GridSpec(2,2)
         al,ar = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
         ab = f.add_subplot(gs[1,:])
         ab.autoscale()
-        vec = lambda x:np.reshape(x,(-1,1))
-        occ_cost = 50
-        import itertools
-        for y in range(125,h):
+
+    import itertools
+    vec = lambda x:np.reshape(x,(-1,1))
+    occ_cost = 20
+
+    for y in range(h):
+        if debug:
+            al.clear(); ar.clear();ab.clear()
+            al.imshow(imleft); ar.imshow(imright)
+
+        if data_l[y] and data[y]:
+            '''obtain and plot the row data'''
+            pl, pr = np.array(data_l[y]), np.array(data[y])
+
+            M, N = pl.size, pr.size
+
             if debug:
-                al.clear(); ar.clear();ab.clear()
-                al.imshow(imleft); ar.imshow(imright)
-
-            if data_l[y] and data[y]:
-                '''obtain and plot the row data'''
-                pl, pr = np.array(data_l[y]), np.array(data[y])
-                M, N = pl.size, pr.size
-
                 al.plot(pl, [y]*M, 'r.',ms=3)
                 ar.plot(pr, [y]*N, 'b.',ms=3)
                 ab.plot(pl,  imleft[y,pl] ,'r*-')
                 ab.plot(pr, imright[y,pr] ,'b*-')
+
+            if 0:
                 '''1. get all matching error array and corresponding
                       dispairity value, use broacasting to get MxN array,
                       rows for sequential target points(in left image),
                       colums for candidate matching points (in right image)'''
 
                 dis = vec(pl)-pr        # corresponding dispairity value for array Edata
-                vl, vr = imleft[y,pl], imright[y,pr]
+                dis_mask = np.logical_or(dis<10, dis>160)
+
+                vl, vr = imleft[y, pl], imright[y,pr]
+    #            Edata = np.full((M,N), np.inf)
+    #            Edata[dis_mask] = [ calcPatchScore(y,pl[x0],pr[x_can]) for x0,x_can in zip(*dis_mask.nonzero())]
                 Edata = np.abs(vec(vl)-vr)
-                Edata[ dis<10] = np.inf   # negative disparity should not be considered
-                Edata[dis>160] = np.inf   # negative disparity should not be considered
+                Edata[ dis_mask] = np.inf   # negative disparity should not be considered
+
 
                 '''2. Path generation. The state S[l,r] means there are l pixels in the
                       left image matched to r pixels in the right. There are 3 possible
@@ -107,18 +193,19 @@ if __name__ == "__main__":
                         b. start from state S[l-1, r], skip a point in left image l+1->l;
                         c. start from state S[l, r-1], skip a point in right image r+1->r; '''
                 C = np.zeros((M+1,N+1),'f')             # C[i,j] holds the cost to reach the point S[i,j]
-                Best_rec = np.empty_like(Edata,'u2')    # Best_rec[i,j] records the best way to reached it
+                Best_rec = np.empty_like(Edata,'u1')    # Best_rec[i,j] records the best way to reached it
                 for m, n in itertools.product(range(M),range(N)):
                     c1 = C[m-1, n-1] + Edata[m,n]
                     c2 = C[m-1, n] + occ_cost
                     c3 = C[m, n-1] + occ_cost
                     Best_rec[m, n], C[m,n] = min(enumerate([c1,c2,c3]), key=lambda x:x[1])
 
+
                 '''3. Backtrack. Our final goal is the point S[M,N], i.e. M left points
                       match to N right points '''
                 m_idx,n_idx = M-1, N-1
-                res = np.empty_like(pl,'i2')
-                while m_idx!=-1 and m_idx!=-1:
+                res = np.zeros_like(pl,'i2')
+                while m_idx!=0 and n_idx!=0:
                     choice = Best_rec[m_idx, n_idx]
                     if choice == 0:
                         ''' both points are matched'''
@@ -127,23 +214,31 @@ if __name__ == "__main__":
                         n_idx -= 1
                     elif choice == 1:
                         ''' left points is skipped'''
-                        res[m_idx] = 0
                         m_idx -= 1
                     else:
                         n_idx -= 1
+            else:
+                res = fast_dp2(y, pl, pr, occ_cost)
 
-                pl_matched = pl[res!=0]
-                pr_matched = pr[res[res!=0]]
-                d_result[y, pl_matched] = pl_matched - pr_matched
+            pl_matched = pl[res!=0]
+            pr_matched = pr[res[res!=0]]
+            d_result[y, pl_matched] = pl_matched - pr_matched
+            print y
+            if debug:
+                ab.plot([pl_matched,            pr_matched],
+                        [imleft[y,pl_matched],  imright[y, pr_matched]] ,'g-')
+                plt.pause(0.01)
+                plt.waitforbuttonpress()
 
-                if debug:
-                    ab.plot([pl_matched,            pr_matched],
-                            [imleft[y,pl_matched],  imright[y, pr_matched]] ,'g-')
-                    plt.pause(0.01)
-                    plt.waitforbuttonpress()
+    v,u = np.where(np.logical_and(d_result >10,d_result <150))
+    p3d = np.vstack([(u-0.5*w)/435.016,
+                     (v-0.5*h)/435.016,
+                     np.ones(u.shape[0])
+                     ]).astype('f')/d_result[v,u]*0.119554
+    plotxyzrgb(np.vstack([p3d,np.tile(imleft[v,u],(3,1))]).T)
+#    plt.waitforbuttonpress()
 
 #%%
-    from scipy import weave
 
     lim, rim = imleft.astype('u1').copy(),imright.astype('u1').copy()
     def fast_dp(y, l_pts, r_pts):
