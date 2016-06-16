@@ -46,15 +46,11 @@ if __name__ == "__main__":
         pvm.append(valid_mask.copy())
 
     pis(valid_mask)
-    cmin = np.minimum(dI[0].min(), dI[1].min())
-    dI[1] += -cmin
-    dI[0] += -cmin
-    scale = int(np.ceil(np.maximum(dI[0].max(), dI[1].max())))
+
 
     for vm,d in zip(pvm, dI):
         dt = np.round(d).astype('int')
         pcolor.append(dt[vm])
-
 
 #% construct database
     data = [[] for _ in range(h)]
@@ -68,18 +64,38 @@ if __name__ == "__main__":
         data_l[y].append(x)
     d_result = np.full_like(imleft, -1)
 
-#%% DP 2nd
+#%% DP2.0
+    x_off, y_off = map(np.ravel, np.meshgrid(range(-1,2),range(-1,2)))
+
     def fast_dp2(y, l_pts, r_pts, occ_cost):
         M, N = l_pts.size, r_pts.size
 
         dis = vec(l_pts)-r_pts        # corresponding dispairity value for array Edata
         dis_mask = np.logical_or(dis<10, dis>160)
+#
+#        Edata = np.full((M,N), np.inf, 'f' )
+#        Edata[dis_mask] = [ calcPatchScore(y,pl[x0],pr[x_can]) for x0,x_can in zip(*dis_mask.nonzero())]
 
+#        vl = np.array([ imleft[y+y_off, x+x_off] for x in pl[:,np.newaxis]],'u1')
+#        vr = np.array([imright[y+y_off, x+x_off] for x in pr[:,np.newaxis]],'u1')
+
+#        Edata = np.empty((M,N), 'f')
         vl, vr = imleft[y, pl].astype('u1'), imright[y,pr].astype('u1')
-        Edata = np.empty((M,N), 'f')
-        Edata = np.abs(vec(vl)-vr)
+        Edata = np.abs(vec(imleft[y, pl])-imright[y,pr])
+#        Edata = np.abs(vec(dI[0][y,pl])-dI[1][y,pr])
+
         Edata[dis_mask] = 65530   # negative disparity should not be considered
+
         result = np.zeros_like(pl,'i2')
+        scode = r"""
+            inline float calcErr(uint8_t *a, uint8_t *b)
+            {
+                float sum = 0;
+                for(size_t i=0; i<9; i++)
+                    sum += std::fabs(*(a++) - *(b++));
+                return sum/9.0;
+            }
+            """
         code = r"""
             size_t M = Nl_pts[0];
             size_t N = Nr_pts[0];
@@ -95,7 +111,13 @@ if __name__ == "__main__":
             for (size_t m=0; m<M; m++)
                 for(size_t n=0; n<N; n++ )
                 {
+                #if 0
+                    int disparity = L_PTS1(m) - R_PTS1(n);
+                    float Edata = (disparity<10 or disparity>160)? INFINITY : calcErr(&VL1(m), &VR1(n));
+                    float c1 = C(m, n) + Edata;
+                #else
                     float c1 = C(m, n) + EDATA2(m,n);
+                #endif
                     float c2 = C(m, n+1) + occ_cost;
                     float c3 = C(m+1, n) + occ_cost;
 
@@ -113,8 +135,8 @@ if __name__ == "__main__":
             while (l!=0 && r!=0)
                 switch(B(l,r)) {
                     case 0:
-                        l -= 1; r -= 1;
                         RESULT1(l) = r;
+                        l -= 1; r -= 1;
                         break;
                     case 1:
                         l -= 1; break;
@@ -135,9 +157,10 @@ if __name__ == "__main__":
             std::cout <<"runtime:" <<duration.count() << "s" <<std::endl;
         """
         weave.inline(code,
-                   ['l_pts', 'r_pts', 'Edata', 'occ_cost','result'],
-                    compiler='gcc',headers=['<chrono>'],
-                    extra_compile_args=['-std=gnu++11 -O3'],
+                   ['l_pts', 'r_pts', 'vl','vr','Edata', 'occ_cost','result'],
+                    support_code = scode,
+                    compiler='gcc',headers=['<chrono>','<cmath>'],
+                    extra_compile_args=['-std=gnu++11 -msse2 -O3'],
                     verbose=2  )
         return result
 
@@ -150,8 +173,8 @@ if __name__ == "__main__":
         ab.autoscale()
 
     import itertools
-    vec = lambda x:np.reshape(x,(-1,1))
-    occ_cost = 20
+    vec = lambda x:x[:,np.newaxis]
+    occ_cost = 15
 
     for y in range(h):
         if debug:
@@ -179,9 +202,9 @@ if __name__ == "__main__":
                 dis = vec(pl)-pr        # corresponding dispairity value for array Edata
                 dis_mask = np.logical_or(dis<10, dis>160)
 
-                vl, vr = imleft[y, pl], imright[y,pr]
     #            Edata = np.full((M,N), np.inf)
     #            Edata[dis_mask] = [ calcPatchScore(y,pl[x0],pr[x_can]) for x0,x_can in zip(*dis_mask.nonzero())]
+                vl, vr = imleft[y, pl], imright[y,pr]
                 Edata = np.abs(vec(vl)-vr)
                 Edata[ dis_mask] = np.inf   # negative disparity should not be considered
 
@@ -236,7 +259,7 @@ if __name__ == "__main__":
                      np.ones(u.shape[0])
                      ]).astype('f')/d_result[v,u]*0.119554
     plotxyzrgb(np.vstack([p3d,np.tile(imleft[v,u],(3,1))]).T)
-#    plt.waitforbuttonpress()
+    plt.waitforbuttonpress()
 
 #%%
 
@@ -469,7 +492,7 @@ if __name__ == "__main__":
 #        print res
         return res
 
-    debug = True
+    debug = False
     d_result = np.full_like(imleft, -1)
 
     if debug:
