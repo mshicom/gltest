@@ -17,7 +17,7 @@ import scipy
 import scipy.ndimage
 from vtk_visualizer import *
 from scipy import weave
-
+from mpl_toolkits.mplot3d import Axes3D
 
 if __name__ == "__main__":
     imleft = plt.imread('./left0000.jpg')[:,:,0].astype('f').copy()
@@ -108,6 +108,11 @@ if __name__ == "__main__":
             #define C(y,x)  Costs[(y)*N1+(x)]
             #define B(y,x)  Bests[(y)*N+(x)]
 
+            for (size_t m=1; m<M; m++)
+                C(m, 0) = m*occ_cost;
+            for (size_t n=1; n<N; n++)
+                C(0, n) = n*occ_cost;
+
             for (size_t m=0; m<M; m++)
                 for(size_t n=0; n<N; n++ )
                 {
@@ -131,7 +136,7 @@ if __name__ == "__main__":
                     B(m,n) = c_min_id;
                 }
 
-            size_t l=M-1, r=N-1;
+            int l=M-1, r=N-1;
             while (l!=0 && r!=0)
                 switch(B(l,r)) {
                     case 0:
@@ -164,13 +169,15 @@ if __name__ == "__main__":
                     verbose=2  )
         return result
 
-    debug = False
+    debug = True
     if debug:
         f = plt.figure(num='query')
         gs = plt.GridSpec(2,2)
         al,ar = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
         ab = f.add_subplot(gs[1,:])
         ab.autoscale()
+        f2 = plt.figure(num='3d')
+        a3d = f2.add_subplot(111) #, projection='3d'
 
     import itertools
     vec = lambda x:x[:,np.newaxis]
@@ -178,8 +185,12 @@ if __name__ == "__main__":
 
     for y in range(h):
         if debug:
+            pf('3d')
+            a3d.clear()
+            pf('query')
             al.clear(); ar.clear();ab.clear()
             al.imshow(imleft); ar.imshow(imright)
+
 
         if data_l[y] and data[y]:
             '''obtain and plot the row data'''
@@ -193,7 +204,7 @@ if __name__ == "__main__":
                 ab.plot(pl,  imleft[y,pl] ,'r*-')
                 ab.plot(pr, imright[y,pr] ,'b*-')
 
-            if 0:
+            if 1:
                 '''1. get all matching error array and corresponding
                       dispairity value, use broacasting to get MxN array,
                       rows for sequential target points(in left image),
@@ -216,9 +227,11 @@ if __name__ == "__main__":
                         b. start from state S[l-1, r], skip a point in left image l+1->l;
                         c. start from state S[l, r-1], skip a point in right image r+1->r; '''
                 C = np.zeros((M+1,N+1),'f')             # C[i,j] holds the cost to reach the point S[i,j]
-                Best_rec = np.empty_like(Edata,'u1')    # Best_rec[i,j] records the best way to reached it
-                for m, n in itertools.product(range(M),range(N)):
-                    c1 = C[m-1, n-1] + Edata[m,n]
+                C[0,:] = np.arange(N+1)*occ_cost
+                C[:,0] = np.arange(M+1)*occ_cost
+                Best_rec = np.zeros_like(C,'u1')    # Best_rec[i,j] records the best way to reached it
+                for m, n in itertools.product(range(1,M+1),range(1,N+1)):
+                    c1 = C[m-1, n-1] + Edata[m-1, n-1]
                     c2 = C[m-1, n] + occ_cost
                     c3 = C[m, n-1] + occ_cost
                     Best_rec[m, n], C[m,n] = min(enumerate([c1,c2,c3]), key=lambda x:x[1])
@@ -226,13 +239,13 @@ if __name__ == "__main__":
 
                 '''3. Backtrack. Our final goal is the point S[M,N], i.e. M left points
                       match to N right points '''
-                m_idx,n_idx = M-1, N-1
+                m_idx, n_idx = M, N
                 res = np.zeros_like(pl,'i2')
                 while m_idx!=0 and n_idx!=0:
                     choice = Best_rec[m_idx, n_idx]
                     if choice == 0:
                         ''' both points are matched'''
-                        res[m_idx] = n_idx
+                        res[m_idx-1] = n_idx-1
                         m_idx -= 1
                         n_idx -= 1
                     elif choice == 1:
@@ -240,6 +253,7 @@ if __name__ == "__main__":
                         m_idx -= 1
                     else:
                         n_idx -= 1
+
             else:
                 res = fast_dp2(y, pl, pr, occ_cost)
 
@@ -248,6 +262,10 @@ if __name__ == "__main__":
             d_result[y, pl_matched] = pl_matched - pr_matched
             print y
             if debug:
+                pf('3d')
+                a3d.imshow(C/C.max(), cmap='jet')
+                plt.pause(0.01)
+                pf('query')
                 ab.plot([pl_matched,            pr_matched],
                         [imleft[y,pl_matched],  imright[y, pr_matched]] ,'g-')
                 plt.pause(0.01)
