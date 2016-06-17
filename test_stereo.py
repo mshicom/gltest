@@ -56,37 +56,34 @@ if __name__ == "__main__":
     data = [[] for _ in range(h)]
     for x,y in zip(px[1], py[1]):
         """put pixels into bins base on their color"""
-        data[y].append(x)
+        data[y].append((x, 0, (y,x)))
 
-    data_l = [[] for _ in range(h)]
+    data_cur = [[] for _ in range(h)]
     for x,y in zip(px[0], py[0]):
         """put pixels into bins base on their color"""
-        data_l[y].append(x)
+        data_cur[y].append((x, 0, (y,x)))
     d_result = np.full_like(imleft, -1)
+
+    min_disparity = 10
+    max_disparity = 160
+
+    lim, rim = imleft.astype('u1').copy(), imright.astype('u1').copy()
 
 #%% DP2.0
     x_off, y_off = map(np.ravel, np.meshgrid(range(-1,2),range(-1,2)))
 
-    def fast_dp2(y, l_pts, r_pts, occ_cost):
-        M, N = l_pts.size, r_pts.size
+    def fast_dp2(a, ly, lx, la, ry, rx, ra, occ_cost):
+        M, N = la.size, ra.size
+        l_pts, r_pts = la,ra
 
         dis = vec(l_pts)-r_pts        # corresponding dispairity value for array Edata
-        dis_mask = np.logical_or(dis<10, dis>160)
-#
-#        Edata = np.full((M,N), np.inf, 'f' )
-#        Edata[dis_mask] = [ calcPatchScore(y,pl[x0],pr[x_can]) for x0,x_can in zip(*dis_mask.nonzero())]
+        dis_mask = np.logical_or(dis<min_disparity, dis>max_disparity)
 
-#        vl = np.array([ imleft[y+y_off, x+x_off] for x in pl[:,np.newaxis]],'u1')
-#        vr = np.array([imright[y+y_off, x+x_off] for x in pr[:,np.newaxis]],'u1')
-
-#        Edata = np.empty((M,N), 'f')
-        vl, vr = imleft[y, pl].astype('u1'), imright[y,pr].astype('u1')
-        Edata = np.abs(vec(imleft[y, pl])-imright[y,pr])
-#        Edata = np.abs(vec(dI[0][y,pl])-dI[1][y,pr])
-
+        vl, vr = lim[ly, lx], rim[ry,rx]
+        Edata = np.abs(vec(vl)-vr)
         Edata[dis_mask] = 65530   # negative disparity should not be considered
 
-        result = np.zeros_like(pl,'i2')
+        result = np.full_like(l_pts,-1,'i2')
         scode = r"""
             inline float calcErr(uint8_t *a, uint8_t *b)
             {
@@ -102,29 +99,29 @@ if __name__ == "__main__":
             size_t N1 = N+1;
             auto start = std::chrono::system_clock::now();
 
-            auto Costs = new float[(M+1)*(N+1)]();  // with 0 initialization
-            auto Bests = new unsigned char[M*N];
+            auto Costs = new float[(M+1)*(N+1)];
+            auto Bests = new unsigned char[(M+1)*(N+1)];
 
             #define C(y,x)  Costs[(y)*N1+(x)]
-            #define B(y,x)  Bests[(y)*N+(x)]
+            #define B(y,x)  Bests[(y)*N1+(x)]
 
-            for (size_t m=1; m<M; m++)
+            for (size_t m=0; m<=M; m++)
                 C(m, 0) = m*occ_cost;
-            for (size_t n=1; n<N; n++)
+            for (size_t n=1; n<=N; n++)
                 C(0, n) = n*occ_cost;
 
-            for (size_t m=0; m<M; m++)
-                for(size_t n=0; n<N; n++ )
+            for (size_t m=1; m<=M; m++)
+                for(size_t n=1; n<=N; n++ )
                 {
                 #if 0
                     int disparity = L_PTS1(m) - R_PTS1(n);
                     float Edata = (disparity<10 or disparity>160)? INFINITY : calcErr(&VL1(m), &VR1(n));
-                    float c1 = C(m, n) + Edata;
+                    float c1 = C(m-1, n-1) + Edata;
                 #else
-                    float c1 = C(m, n) + EDATA2(m,n);
+                    float c1 = C(m-1, n-1) + EDATA2(m-1,n-1);
                 #endif
-                    float c2 = C(m, n+1) + occ_cost;
-                    float c3 = C(m+1, n) + occ_cost;
+                    float c2 = C(m-1, n) + occ_cost;
+                    float c3 = C(m, n-1) + occ_cost;
 
                     float c_min = c1;
                     unsigned char  c_min_id = 0;
@@ -132,15 +129,15 @@ if __name__ == "__main__":
                     if(c2<c_min) { c_min=c2; c_min_id=1; }
                     if(c3<c_min) { c_min=c3; c_min_id=2; }
 
-                    C(m+1, n+1) = c_min;
-                    B(m,n) = c_min_id;
+                    C(m, n) = c_min;
+                    B(m, n) = c_min_id;
                 }
 
-            int l=M-1, r=N-1;
+            int l=M, r=N;
             while (l!=0 && r!=0)
                 switch(B(l,r)) {
                     case 0:
-                        RESULT1(l) = r;
+                        RESULT1(l-1) = r-1;
                         l -= 1; r -= 1;
                         break;
                     case 1:
@@ -181,7 +178,7 @@ if __name__ == "__main__":
 
     import itertools
     vec = lambda x:x[:,np.newaxis]
-    occ_cost = 15
+    occ_cost = 20
 
     for y in range(h):
         if debug:
@@ -191,10 +188,18 @@ if __name__ == "__main__":
             al.clear(); ar.clear();ab.clear()
             al.imshow(imleft); ar.imshow(imright)
 
-
-        if data_l[y] and data[y]:
+        if data_cur[y] and data[y]:
             '''obtain and plot the row data'''
-            pl, pr = np.array(data_l[y]), np.array(data[y])
+            prd,pcd = data[y],data_cur[y]
+            pcd.sort()
+            pcd = zip(*pcd)
+            ly, lx = map(np.array, zip(*pcd[2]))
+            pl = np.array(pcd[0])
+
+            prd.sort()
+            prd = zip(*prd)
+            ry, rx = map(np.array,zip(*prd[2]))
+            pr = np.array(prd[0])
 
             M, N = pl.size, pr.size
 
@@ -211,7 +216,7 @@ if __name__ == "__main__":
                       colums for candidate matching points (in right image)'''
 
                 dis = vec(pl)-pr        # corresponding dispairity value for array Edata
-                dis_mask = np.logical_or(dis<10, dis>160)
+                dis_mask = np.logical_or(dis<min_disparity, dis>max_disparity)
 
     #            Edata = np.full((M,N), np.inf)
     #            Edata[dis_mask] = [ calcPatchScore(y,pl[x0],pr[x_can]) for x0,x_can in zip(*dis_mask.nonzero())]
@@ -240,12 +245,12 @@ if __name__ == "__main__":
                 '''3. Backtrack. Our final goal is the point S[M,N], i.e. M left points
                       match to N right points '''
                 m_idx, n_idx = M, N
-                res = np.zeros_like(pl,'i2')
+                res = np.full_like(pl,-1,'i2')
                 while m_idx!=0 and n_idx!=0:
                     choice = Best_rec[m_idx, n_idx]
                     if choice == 0:
                         ''' both points are matched'''
-                        res[m_idx-1] = n_idx-1
+                        res[m_idx-1] = n_idx-1  # first 1-based
                         m_idx -= 1
                         n_idx -= 1
                     elif choice == 1:
@@ -255,16 +260,16 @@ if __name__ == "__main__":
                         n_idx -= 1
 
             else:
-                res = fast_dp2(y, pl, pr, occ_cost)
+                res = fast_dp2(y, ly, lx, pl, ry, rx, pr, occ_cost)
 
-            pl_matched = pl[res!=0]
-            pr_matched = pr[res[res!=0]]
+            pl_matched = pl[res!=-1]
+            pr_matched = pr[res[res!=-1]]
             d_result[y, pl_matched] = pl_matched - pr_matched
             print y
             if debug:
-                pf('3d')
-                a3d.imshow(C/C.max(), cmap='jet')
-                plt.pause(0.01)
+#                pf('3d')
+#                a3d.imshow(C/C.max(), cmap='jet')
+#                plt.pause(0.01)
                 pf('query')
                 ab.plot([pl_matched,            pr_matched],
                         [imleft[y,pl_matched],  imright[y, pr_matched]] ,'g-')
@@ -389,19 +394,19 @@ if __name__ == "__main__":
                 // 1. setup occlusion/no-match as the first candidate, if there are no
                 // valid candiate matching points, then this will be the only option.
                 {
-                    float min_Edata_last = p_last_state->d_costs[0];
+                    float min_Edata_curast = p_last_state->d_costs[0];
                     size_t min_E_idx = 0;
 
                     for (size_t k=1; k<p_last_state->d_list.size(); k++)
                     {
-                        float Edata_last = p_last_state->d_costs[k];  // cummulated path cost
-                        if(Edata_last < min_Edata_last){
-                            min_Edata_last = Edata_last;
+                        float Edata_curast = p_last_state->d_costs[k];  // cummulated path cost
+                        if(Edata_curast < min_Edata_curast){
+                            min_Edata_curast = Edata_curast;
                             min_E_idx = k;
                         }
                     }
                     p_current_state->d_list.push_back(0);
-                    p_current_state->d_costs.push_back(min_Edata_last + Penalty_Occ); // constant cost for Occulsion assumption,no penalty for state changes to occulsion
+                    p_current_state->d_costs.push_back(min_Edata_curast + Penalty_Occ); // constant cost for Occulsion assumption,no penalty for state changes to occulsion
                     p_current_state->pre_idx.push_back(min_E_idx);
                 }
 
@@ -520,8 +525,8 @@ if __name__ == "__main__":
         ab = f.add_subplot(gs[1,:])
         ab.autoscale()
     for y in range(h):
-        if data_l[y] and data[y]:
-            l_pts, r_pts = np.array(data_l[y]), np.array(data[y])
+        if data_cur[y] and data[y]:
+            l_pts, r_pts = np.array(data_cur[y]), np.array(data[y])
             res = fast_dp(y, l_pts, r_pts)
             d_result[y, l_pts] = res
             if debug:
@@ -581,7 +586,7 @@ if __name__ == "__main__":
                 al.imshow(imleft); ar.imshow(imright)
             pl,pr = [],[]
             '''obtain and plot the row data'''
-            for p in data_l[y]:
+            for p in data_cur[y]:
                 if debug:
                     al.plot(p, y,'r.',ms=3)
                 pl.append((p, imleft[y, p], dI[0][y, p]))
@@ -681,7 +686,7 @@ if __name__ == "__main__":
             al.imshow(imleft); ar.imshow(imright)
             pl,pr = [],[]
             '''obtain and plot the row data'''
-            for p in data_l[y]:
+            for p in data_cur[y]:
                 al.plot(p, y,'r.',ms=3)
                 pl.append((p, imleft[y, p], dI[0][y, p]))
             for p in data[y]:

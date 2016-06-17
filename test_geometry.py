@@ -17,6 +17,8 @@ import scipy
 import scipy.ndimage
 import scipy.io
 from vtk_visualizer import *
+
+from scipy import weave
 #%%
 
 
@@ -199,14 +201,17 @@ if __name__ == "__main__":
         v_int = np.round(a)
         data_cur[int(v_int)].append((np.double(az), np.double(a - v_int) ,tuple(p)))
 
+    min_disparity = 0
+    max_disparity = 4.0
 #%% demo: points on the scanline
-    if 0:
-        def trueProj(x, y, G=cGr):
-            p0 = np.array([(x-cx)/fx, (y-cy)/fy, np.ones(len(x))])*Z[y,x]
-            p =  K.dot(G[0:3,0:3].dot(p0)+G[0:3,3][:,np.newaxis])
-            p /= p[2]
-            return p[0],p[1]
 
+    def trueProj(x, y, G=cGr):
+        p0 = np.array([(x-cx)/fx, (y-cy)/fy, np.ones(len(x))])*Z[y,x]
+        p =  K.dot(G[0:3,0:3].dot(p0)+G[0:3,3][:,np.newaxis])
+        p /= p[2]
+        return p[0],p[1]
+
+    if 0:
         f = plt.figure(num='query')
         gs = plt.GridSpec(2,2)
         ar,ac = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
@@ -275,9 +280,154 @@ if __name__ == "__main__":
             P = snormalize(np.array([(pref[0]-cx)/fx, (pref[1]-cy)/fy, 1.0]))*prange
             print 'Ground truth:%f, estimated:%f' % (P[2], Z[pref[1],pref[0]])
 #    test_calcRange()
+#%%
+    lim, rim = (Icur*255).astype('u1').copy(), (Iref*255).astype('u1').copy()
+    def fast_dp2(a, ly, lx, la, ry, rx, ra, occ_cost):
+        M, N = la.size, ra.size
+        l_pts, r_pts = la,ra
+
+        dis = vec(l_pts)-r_pts        # corresponding dispairity value for array Edata
+        dis_mask = np.logical_or(dis<0, dis>4)
+
+        vl, vr = lim[ly, lx], rim[ry,rx]
+        Edata = np.abs(vec(vl)-vr)
+        Edata[dis_mask] = 65530   # negative disparity should not be considered
+
+        result = np.full_like(l_pts,-1,'i2')
+        scode = r"""
+            inline float calcErr(uint8_t *a, uint8_t *b)
+            {
+                float sum = 0;
+                for(size_t i=0; i<9; i++)
+                    sum += std::fabs(*(a++) - *(b++));
+                return sum/9.0;
+            }
+            """
+        code = r"""
+            size_t M = Nl_pts[0];
+            size_t N = Nr_pts[0];
+            size_t N1 = N+1;
+            auto start = std::chrono::system_clock::now();
+
+            auto Costs = new float[(M+1)*(N+1)];
+            auto Bests = new unsigned char[(M+1)*(N+1)];
+
+            #define C(y,x)  Costs[(y)*N1+(x)]
+            #define B(y,x)  Bests[(y)*N1+(x)]
+
+            for (size_t m=0; m<=M; m++)
+                C(m, 0) = m*occ_cost;
+            for (size_t n=1; n<=N; n++)
+                C(0, n) = n*occ_cost;
+
+            for (size_t m=1; m<=M; m++)
+                for(size_t n=1; n<=N; n++ )
+                {
+                #if 0
+                    int disparity = L_PTS1(m) - R_PTS1(n);
+                    float Edata = (disparity<10 or disparity>160)? INFINITY : calcErr(&VL1(m), &VR1(n));
+                    float c1 = C(m-1, n-1) + Edata;
+                #else
+                    float c1 = C(m-1, n-1) + EDATA2(m-1,n-1);
+                #endif
+                    float c2 = C(m-1, n) + occ_cost;
+                    float c3 = C(m, n-1) + occ_cost;
+
+                    float c_min = c1;
+                    unsigned char  c_min_id = 0;
+
+                    if(c2<c_min) { c_min=c2; c_min_id=1; }
+                    if(c3<c_min) { c_min=c3; c_min_id=2; }
+
+                    C(m, n) = c_min;
+                    B(m, n) = c_min_id;
+                }
+
+            int l=M, r=N;
+            while (l!=0 && r!=0)
+                switch(B(l,r)) {
+                    case 0:
+                        RESULT1(l-1) = r-1;
+                        l -= 1; r -= 1;
+                        break;
+                    case 1:
+                        l -= 1; break;
+                    case 2:
+                        r -= 1; break;
+                    default:
+                        std::cerr << "unknown value of x";
+                        goto exit_loop;
+                }
+            exit_loop: ;
+
+            delete[] Costs;
+            delete[] Bests;
+            #undef C(y,x)
+            #undef B(y,x)
+            auto duration = std::chrono::duration<double>
+                (std::chrono::system_clock::now() - start);
+            std::cout <<"runtime:" <<duration.count() << "s" <<std::endl;
+        """
+        weave.inline(code,
+                   ['l_pts', 'r_pts', 'vl','vr','Edata', 'occ_cost','result'],
+                    support_code = scode,
+                    compiler='gcc',headers=['<chrono>','<cmath>'],
+                    extra_compile_args=['-std=gnu++11 -msse2 -O3'],
+                    verbose=2  )
+        return result
+
+    debug = True
+    d_result = np.full_like(Icur, -1,'f')
+
+    if debug:
+        f = plt.figure(num='dpstereo')
+        gs = plt.GridSpec(2,2)
+        al,ar = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
+        ab = f.add_subplot(gs[1,:])
+        ab.autoscale()
+
+    for a in  range(ang_scaler.levels+1):#[65]:
+        pr,pc = data[a],data_cur[a]
+
+        if pc and pr:
+            pc.sort()
+            pc = zip(*pc)
+            ly, lx = map(np.array, zip(*pc[2]))
+            la = np.array(pc[0])
+
+            pr.sort()
+            pr = zip(*pr)
+            ry, rx = map(np.array,zip(*pr[2]))
+            ra = np.array(pr[0])
+
+            res = fast_dp2(a, ly, lx, la, ry, rx, ra, 20.0)
+            if np.all(res==-1):
+                continue
+
+            lyc,lxc,lac,match_idx = ( np.compress(res!=-1, dump) for dump in [ly,lx,la,res] )
+            rxm,rym,ram = ( np.take(dump, match_idx) for dump in [rx,ry,ra] )
+            d_result[lyc, lxc] = calcRange(ang_scaler(ram, isInvert=True),
+                                           ang_scaler(lac, isInvert=True))
+            if debug:
+                al.clear(); ar.clear();ab.clear()
+                al.imshow(Icur);  #al.set_xlim([lx.min(),lx.max()]); al.set_ylim([ly.min(),ly.max()]);
+                ar.imshow(Iref);  #ar.set_xlim([rx.min(),rx.max()]); ar.set_ylim([ry.min(),ry.max()]);
+                ar.plot(rx, ry,'b.')
+                tx,ty = trueProj(rx, ry)
+                al.plot(tx,ty,'g.')
+                al.plot(lx, ly,'r.')
+
+                ab.plot(la, lim[ly, lx],'r*-')
+                ab.plot(ra, rim[ry, rx],'b*-')
+                ab.plot([lac, ram],
+                        [lim[lyc, lxc],rim[rym, rxm]],'g-')
+
+                plt.pause(0.01)
+                plt.waitforbuttonpress()
+        print a
 
 #%%
-    from scipy import weave
+
 
     lim, rim = (Icur*255).astype('u1').copy(), (Iref*255).astype('u1').copy()
     def fast_dp(a, ly, lx, la, ry, rx, ra):
