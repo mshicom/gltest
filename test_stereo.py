@@ -64,13 +64,12 @@ if __name__ == "__main__":
         data_cur[y].append((x, 0, (y,x)))
     d_result = np.full_like(imleft, -1)
 
-    min_disparity = 10
-    max_disparity = 160
 
     lim, rim = imleft.astype('u1').copy(), imright.astype('u1').copy()
 
 #%% DP2.0
     x_off, y_off = map(np.ravel, np.meshgrid(range(-1,2),range(-1,2)))
+    min_disparity, max_disparity = 10, 160
 
     def fast_dp2(a, ly, lx, la, ry, rx, ra, occ_cost):
         M, N = la.size, ra.size
@@ -83,18 +82,22 @@ if __name__ == "__main__":
         Edata = np.abs(vec(vl)-vr)
         Edata[dis_mask] = 65530   # negative disparity should not be considered
 
+        vl = np.array([ lim[y+y_off, x+x_off] for y,x in zip(vec(ly),vec(lx)) ],'u1')
+        vr = np.array([ rim[y+y_off, x+x_off] for y,x in zip(vec(ry),vec(rx)) ],'u1')
+
         result = np.full_like(l_pts,-1,'i2')
         scode = r"""
             inline float calcErr(uint8_t *a, uint8_t *b)
             {
                 float sum = 0;
                 for(size_t i=0; i<9; i++)
-                    sum += std::fabs(*(a++) - *(b++));
+                    sum += std::fabs((float)*(a++) - (float)*(b++));
                 return sum/9.0;
             }
             """
         code = r"""
             size_t M = Nl_pts[0];
+
             size_t N = Nr_pts[0];
             size_t N1 = N+1;
             auto start = std::chrono::system_clock::now();
@@ -110,16 +113,17 @@ if __name__ == "__main__":
             for (size_t n=1; n<=N; n++)
                 C(0, n) = n*occ_cost;
 
-            for (size_t m=1; m<=M; m++)
-                for(size_t n=1; n<=N; n++ )
+            for (size_t m=1,md=0; m<=M; m++,md++)
+                for(size_t n=1,nd=0; n<=N; n++,nd++ )
                 {
-                #if 0
-                    int disparity = L_PTS1(m) - R_PTS1(n);
-                    float Edata = (disparity<10 or disparity>160)? INFINITY : calcErr(&VL1(m), &VR1(n));
-                    float c1 = C(m-1, n-1) + Edata;
-                #else
-                    float c1 = C(m-1, n-1) + EDATA2(m-1,n-1);
-                #endif
+                    #if 0
+                        float disparity = L_PTS1(md) - R_PTS1(nd);
+                        float Edata = (disparity<min_disparity or disparity> max_disparity)? 65530 : calcErr(&VL2(md,0), &VR2(nd,0));
+                        float c1 = C(m-1, n-1) + Edata;
+                    #else
+                        float c1 = C(m-1, n-1) + EDATA2(md,nd);
+                    #endif
+
                     float c2 = C(m-1, n) + occ_cost;
                     float c3 = C(m, n-1) + occ_cost;
 
@@ -154,19 +158,19 @@ if __name__ == "__main__":
             delete[] Bests;
             #undef C(y,x)
             #undef B(y,x)
-            auto duration = std::chrono::duration<double>
-                (std::chrono::system_clock::now() - start);
-            std::cout <<"runtime:" <<duration.count() << "s" <<std::endl;
+            //auto duration = std::chrono::duration<double>
+            //    (std::chrono::system_clock::now() - start);
+            //std::cout <<"runtime:" <<duration.count() << "s" <<std::endl;
         """
         weave.inline(code,
-                   ['l_pts', 'r_pts', 'vl','vr','Edata', 'occ_cost','result'],
+                   ['l_pts', 'r_pts', 'vl','vr','Edata', 'occ_cost','min_disparity','max_disparity','result'],
                     support_code = scode,
                     compiler='gcc',headers=['<chrono>','<cmath>'],
                     extra_compile_args=['-std=gnu++11 -msse2 -O3'],
                     verbose=2  )
         return result
 
-    debug = True
+    debug = False
     if debug:
         f = plt.figure(num='query')
         gs = plt.GridSpec(2,2)
@@ -209,7 +213,7 @@ if __name__ == "__main__":
                 ab.plot(pl,  imleft[y,pl] ,'r*-')
                 ab.plot(pr, imright[y,pr] ,'b*-')
 
-            if 1:
+            if 0:
                 '''1. get all matching error array and corresponding
                       dispairity value, use broacasting to get MxN array,
                       rows for sequential target points(in left image),
@@ -524,17 +528,32 @@ if __name__ == "__main__":
         al,ar = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
         ab = f.add_subplot(gs[1,:])
         ab.autoscale()
+
     for y in range(h):
         if data_cur[y] and data[y]:
-            l_pts, r_pts = np.array(data_cur[y]), np.array(data[y])
-            res = fast_dp(y, l_pts, r_pts)
-            d_result[y, l_pts] = res
+            '''obtain and plot the row data'''
+            prd,pcd = data[y],data_cur[y]
+            pcd.sort()
+            pcd = zip(*pcd)
+            ly, lx = map(np.array, zip(*pcd[2]))
+            pl = np.array(pcd[0])
+
+            prd.sort()
+            prd = zip(*prd)
+            ry, rx = map(np.array,zip(*prd[2]))
+            pr = np.array(prd[0])
+
+            M, N = pl.size, pr.size
+
+
+            res = fast_dp(y, pl, pr)
+            d_result[y, pl] = res
             if debug:
                 al.clear(); ar.clear();ab.clear()
                 al.imshow(imleft); ar.imshow(imright)
                 ab.plot(l_pts, lim[y, l_pts],'r*-')
                 ab.plot(r_pts, rim[y, r_pts],'b*-')
-                pts0 = l_pts[res!=0]
+                pts0 = pl[res!=0]
                 pts1 = pts0 - res[res!=0]
                 ab.plot([pts0,         pts1],
                         [lim[y, pts0], rim[y, pts1]],'g-')

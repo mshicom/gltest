@@ -201,8 +201,7 @@ if __name__ == "__main__":
         v_int = np.round(a)
         data_cur[int(v_int)].append((np.double(az), np.double(a - v_int) ,tuple(p)))
 
-    min_disparity = 0
-    max_disparity = 4.0
+
 #%% demo: points on the scanline
 
     def trueProj(x, y, G=cGr):
@@ -282,29 +281,36 @@ if __name__ == "__main__":
 #    test_calcRange()
 #%%
     lim, rim = (Icur*255).astype('u1').copy(), (Iref*255).astype('u1').copy()
-    def fast_dp2(a, ly, lx, la, ry, rx, ra, occ_cost):
+    x_off, y_off = map(np.ravel, np.meshgrid(range(-1,2),range(-1,2)))
+    min_disparity, max_disparity = 0, 4.0
+    import itertools
+
+    def fast_dp2(a, ly, lx, la,laz, ry, rx, ra,raz, occ_cost):
         M, N = la.size, ra.size
         l_pts, r_pts = la,ra
 
         dis = vec(l_pts)-r_pts        # corresponding dispairity value for array Edata
         dis_mask = np.logical_or(dis<0, dis>4)
 
-        vl, vr = lim[ly, lx], rim[ry,rx]
-        Edata = np.abs(vec(vl)-vr)
+        vl, vr = lim[ly, lx].astype('i'), rim[ry,rx].astype('i')
+        Edata = np.abs(vec(vl)-vr)+ np.abs(vec(laz)-raz)*10
         Edata[dis_mask] = 65530   # negative disparity should not be considered
 
+        vl = np.array([ lim[y+y_off, x+x_off] for y,x in zip(vec(ly),vec(lx)) ],'u1')
+        vr = np.array([ rim[y+y_off, x+x_off] for y,x in zip(vec(ry),vec(rx)) ],'u1')
         result = np.full_like(l_pts,-1,'i2')
         scode = r"""
             inline float calcErr(uint8_t *a, uint8_t *b)
             {
                 float sum = 0;
                 for(size_t i=0; i<9; i++)
-                    sum += std::fabs(*(a++) - *(b++));
+                    sum += std::fabs((float)*(a++) - (float)*(b++));
                 return sum/9.0;
             }
             """
         code = r"""
             size_t M = Nl_pts[0];
+
             size_t N = Nr_pts[0];
             size_t N1 = N+1;
             auto start = std::chrono::system_clock::now();
@@ -320,16 +326,17 @@ if __name__ == "__main__":
             for (size_t n=1; n<=N; n++)
                 C(0, n) = n*occ_cost;
 
-            for (size_t m=1; m<=M; m++)
-                for(size_t n=1; n<=N; n++ )
+            for (size_t m=1,md=0; m<=M; m++,md++)
+                for(size_t n=1,nd=0; n<=N; n++,nd++ )
                 {
-                #if 0
-                    int disparity = L_PTS1(m) - R_PTS1(n);
-                    float Edata = (disparity<10 or disparity>160)? INFINITY : calcErr(&VL1(m), &VR1(n));
-                    float c1 = C(m-1, n-1) + Edata;
-                #else
-                    float c1 = C(m-1, n-1) + EDATA2(m-1,n-1);
-                #endif
+                    #if 1
+                        float disparity = L_PTS1(md) - R_PTS1(nd);
+                        float Edata = (disparity<min_disparity or disparity> max_disparity)? 65530 : calcErr(&VL2(md,0), &VR2(nd,0));
+                        float c1 = C(m-1, n-1) + Edata;
+                    #else
+                        float c1 = C(m-1, n-1) + EDATA2(md,nd);
+                    #endif
+
                     float c2 = C(m-1, n) + occ_cost;
                     float c3 = C(m, n-1) + occ_cost;
 
@@ -364,20 +371,22 @@ if __name__ == "__main__":
             delete[] Bests;
             #undef C(y,x)
             #undef B(y,x)
-            auto duration = std::chrono::duration<double>
-                (std::chrono::system_clock::now() - start);
-            std::cout <<"runtime:" <<duration.count() << "s" <<std::endl;
+            //auto duration = std::chrono::duration<double>
+            //    (std::chrono::system_clock::now() - start);
+            //std::cout <<"runtime:" <<duration.count() << "s" <<std::endl;
         """
+
         weave.inline(code,
-                   ['l_pts', 'r_pts', 'vl','vr','Edata', 'occ_cost','result'],
+                   ['l_pts', 'r_pts', 'vl','vr','Edata', 'occ_cost','min_disparity','max_disparity','result'],
                     support_code = scode,
                     compiler='gcc',headers=['<chrono>','<cmath>'],
                     extra_compile_args=['-std=gnu++11 -msse2 -O3'],
-                    verbose=2  )
+                    verbose=1  )
         return result
 
     debug = True
-    d_result = np.full_like(Icur, -1,'f')
+    occ_cost = 20
+    d_result = np.full_like(Icur, np.nan,'f')
 
     if debug:
         f = plt.figure(num='dpstereo')
@@ -393,14 +402,66 @@ if __name__ == "__main__":
             pc.sort()
             pc = zip(*pc)
             ly, lx = map(np.array, zip(*pc[2]))
-            la = np.array(pc[0])
+            la,laz = np.array(pc[0]), np.array(pc[1])
 
             pr.sort()
             pr = zip(*pr)
             ry, rx = map(np.array,zip(*pr[2]))
-            ra = np.array(pr[0])
+            ra, raz = np.array(pr[0]), np.array(pr[1])
 
-            res = fast_dp2(a, ly, lx, la, ry, rx, ra, 20.0)
+            if 0:
+                '''1. get all matching error array and corresponding
+                      dispairity value, use broacasting to get MxN array,
+                      rows for sequential target points(in left image),
+                      colums for candidate matching points (in right image)'''
+                pl,pr = la,ra
+                M, N = la.size, ra.size
+
+                dis = vec(pl)-pr        # corresponding dispairity value for array Edata
+                dis_mask = np.logical_or(dis<min_disparity, dis>max_disparity)
+
+    #            Edata[dis_mask] = [ calcPatchScore(y,pl[x0],pr[x_can]) for x0,x_can in zip(*dis_mask.nonzero())]
+                vl, vr = lim[ly, lx].astype('i'), rim[ry,rx].astype('i')
+                Edata = np.abs(vec(vl)-vr)
+                Edata[ dis_mask] = 65530   # negative disparity should not be considered
+
+
+                '''2. Path generation. The state S[l,r] means there are l pixels in the
+                      left image matched to r pixels in the right. There are 3 possible
+                      ways to reach the state S[l,r]:
+                        a. start from state S[l-1, r-1], match one more pair;
+                        b. start from state S[l-1, r], skip a point in left image l+1->l;
+                        c. start from state S[l, r-1], skip a point in right image r+1->r; '''
+                C = np.zeros((M+1,N+1),'f')             # C[i,j] holds the cost to reach the point S[i,j]
+                C[0,:] = np.arange(N+1)*occ_cost
+                C[:,0] = np.arange(M+1)*occ_cost
+                Best_rec = np.zeros_like(C,'u1')    # Best_rec[i,j] records the best way to reached it
+                for m, n in itertools.product(range(1,M+1),range(1,N+1)):
+                    c1 = C[m-1, n-1] + Edata[m-1, n-1]
+                    c2 = C[m-1, n] + occ_cost
+                    c3 = C[m, n-1] + occ_cost
+                    Best_rec[m, n], C[m,n] = min(enumerate([c1,c2,c3]), key=lambda x:x[1])
+
+
+                '''3. Backtrack. Our final goal is the point S[M,N], i.e. M left points
+                      match to N right points '''
+                m_idx, n_idx = M, N
+                res = np.full_like(pl,-1,'i2')
+                while m_idx!=0 and n_idx!=0:
+                    choice = Best_rec[m_idx, n_idx]
+                    if choice == 0:
+                        ''' both points are matched'''
+                        res[m_idx-1] = n_idx-1  # first 1-based
+                        m_idx -= 1
+                        n_idx -= 1
+                    elif choice == 1:
+                        ''' left points is skipped'''
+                        m_idx -= 1
+                    else:
+                        n_idx -= 1
+
+            else:
+                res = fast_dp2(a, ly, lx, la,laz, ry, rx, ra,raz, occ_cost)
             if np.all(res==-1):
                 continue
 
@@ -408,6 +469,7 @@ if __name__ == "__main__":
             rxm,rym,ram = ( np.take(dump, match_idx) for dump in [rx,ry,ra] )
             d_result[lyc, lxc] = calcRange(ang_scaler(ram, isInvert=True),
                                            ang_scaler(lac, isInvert=True))
+            assert(np.all(d_result[lyc, lxc]>0))
             if debug:
                 al.clear(); ar.clear();ab.clear()
                 al.imshow(Icur);  #al.set_xlim([lx.min(),lx.max()]); al.set_ylim([ly.min(),ly.max()]);
@@ -420,280 +482,281 @@ if __name__ == "__main__":
                 ab.plot(la, lim[ly, lx],'r*-')
                 ab.plot(ra, rim[ry, rx],'b*-')
                 ab.plot([lac, ram],
-                        [lim[lyc, lxc],rim[rym, rxm]],'g-')
+                        [lim[lyc, lxc],rim[rym, rxm]],'g--')
 
                 plt.pause(0.01)
                 plt.waitforbuttonpress()
         print a
 
+
 #%%
+    if 0:
 
-
-    lim, rim = (Icur*255).astype('u1').copy(), (Iref*255).astype('u1').copy()
-    def fast_dp(a, ly, lx, la, ry, rx, ra):
-        res = np.full_like(la, -1, dtype='i8')
-        scode = r"""
-            #include <vector>
-            #include <iostream>
-            #include <fstream>
-            #include <memory>
-            #include <cmath>
-            #include <limits>
-            #include <cstddef>
-            #include <cstdio>
-            #include <chrono>
-            #define CAP  512
-            struct Cost
-            {
-               float x;
-               int v;
-               std::vector<float> d_list;
-               std::vector<size_t> pre_idx;
-               std::vector<float> d_costs;
-
-               Cost(int x, int v)
-               :x(x), v(v) {}
-
-               Cost() {
-                   d_list.reserve(CAP);
-                   pre_idx.reserve(CAP);
-                   d_costs.reserve(CAP);
-               }
-            };
-            typedef std::shared_ptr<Cost> ptrCost;
-        """
-        code = r"""
-
-            auto start = std::chrono::system_clock::now();
-
-            size_t M = Nla[0];
-            size_t N = Nra[0];
-            std::vector< ptrCost > states;
-            states.reserve(M);
-
-            // I. forward steps
-            // special care for the first point, no regularization term
-            size_t target_idx = 0;
-            {
-                ptrCost p_current_state = std::make_shared<Cost>();
-                float x = LA1(target_idx);               // pixel angle
-                int v = LIM2(LY1(target_idx), LX1(target_idx));    // pixel intensity
-                p_current_state->x = x;
-std::cout<< "[" << x << "]:-----------------\n";
-                // 1. setup occlusion/no-match as the first candidate.
+        lim, rim = (Icur*255).astype('u1').copy(), (Iref*255).astype('u1').copy()
+        def fast_dp(a, ly, lx, la, ry, rx, ra):
+            res = np.full_like(la, -1, dtype='i8')
+            scode = r"""
+                #include <vector>
+                #include <iostream>
+                #include <fstream>
+                #include <memory>
+                #include <cmath>
+                #include <limits>
+                #include <cstddef>
+                #include <cstdio>
+                #include <chrono>
+                #define CAP  512
+                struct Cost
                 {
-                    p_current_state->d_list.push_back(0);
-                    p_current_state->d_costs.push_back(Penalty_Occ);    // constant cost for Occulsion assumption
-                    p_current_state->pre_idx.push_back(0);
-    std::cout<< '\t' << 0 <<'['<< Penalty_Occ <<"] \t" ;
+                   float x;
+                   int v;
+                   std::vector<float> d_list;
+                   std::vector<size_t> pre_idx;
+                   std::vector<float> d_costs;
 
-                }
+                   Cost(int x, int v)
+                   :x(x), v(v) {}
 
-                // 2. calculate the N candiate paths with corresponding optimum cost
-                for (size_t candidate_idx=1; candidate_idx<N+1; candidate_idx++)
+                   Cost() {
+                       d_list.reserve(CAP);
+                       pre_idx.reserve(CAP);
+                       d_costs.reserve(CAP);
+                   }
+                };
+                typedef std::shared_ptr<Cost> ptrCost;
+            """
+            code = r"""
+
+                auto start = std::chrono::system_clock::now();
+
+                size_t M = Nla[0];
+                size_t N = Nra[0];
+                std::vector< ptrCost > states;
+                states.reserve(M);
+
+                // I. forward steps
+                // special care for the first point, no regularization term
+                size_t target_idx = 0;
                 {
-                    size_t candidate_data_idx = candidate_idx-1;
-                    float x_can = RA1(candidate_data_idx);
-                    float disparity = x-x_can;
-
-                    // discard points with negative or too small disparity(i.e too far away).
-                    // Terminate the loop once the condition breaks, assuming the point-list
-                    // are already ordered in x coordinate,
-                    if (disparity>max_disparity)
-                        continue;
-                    else if (disparity<min_disparity)
-                        break;
-
-                    // 2a. matching cost for this disparity value
-                    int v_can = RIM2(RY1(candidate_data_idx), RX1(candidate_data_idx));
-                    float Edata = std::fabs(v - v_can);
-std::cout<< candidate_idx <<'['<< Edata <<"] \t" ;
-
-                    p_current_state->d_list.push_back(disparity);
-                    p_current_state->d_costs.push_back(Edata);
-                    p_current_state->pre_idx.push_back(candidate_idx);
-                }
-std::cout<< std::endl;
-                // 3. done with this target pixel and move on the next
-                states.push_back(p_current_state);
-            }
-
-            for (target_idx=1; target_idx<M; target_idx++) {
-                ptrCost p_last_state = states.back();
-                ptrCost p_current_state = std::make_shared<Cost>();
-
-                float x = LA1(target_idx);               // pixel angle
-                int v = LIM2(LY1(target_idx), LX1(target_idx));    // pixel intensity
-                p_current_state->x = x;
-                p_current_state->v = v;
-std::cout<< "[" << x << "]:-----------------\n";
-                /* 1. setup occlusion/no-match as the first candidate, if there are no
-                   valid candiate matching points, then this will be the only option.*/
-                {
-                    float min_Edata_last = p_last_state->d_costs[0];
-                    size_t min_E_idx = 0;
-
-                    for (size_t k=1; k<p_last_state->d_list.size(); k++)
+                    ptrCost p_current_state = std::make_shared<Cost>();
+                    float x = LA1(target_idx);               // pixel angle
+                    int v = LIM2(LY1(target_idx), LX1(target_idx));    // pixel intensity
+                    p_current_state->x = x;
+    std::cout<< "[" << x << "]:-----------------\n";
+                    // 1. setup occlusion/no-match as the first candidate.
                     {
-                        float Edata_last = p_last_state->d_costs[k];  // cummulated path cost
-                        if(Edata_last < min_Edata_last){
-                            min_Edata_last = Edata_last;
-                            min_E_idx = k;
-                        }
-                    }
-                    p_current_state->d_list.push_back(0);
-                    p_current_state->d_costs.push_back(min_Edata_last + Penalty_Occ); // constant cost for Occulsion assumption,no penalty for state changes to occulsion
-                    p_current_state->pre_idx.push_back(min_E_idx);
+                        p_current_state->d_list.push_back(0);
+                        p_current_state->d_costs.push_back(Penalty_Occ);    // constant cost for Occulsion assumption
+                        p_current_state->pre_idx.push_back(0);
+        std::cout<< '\t' << 0 <<'['<< Penalty_Occ <<"] \t" ;
 
+                    }
+
+                    // 2. calculate the N candiate paths with corresponding optimum cost
+                    for (size_t candidate_idx=1; candidate_idx<N+1; candidate_idx++)
+                    {
+                        size_t candidate_data_idx = candidate_idx-1;
+                        float x_can = RA1(candidate_data_idx);
+                        float disparity = x-x_can;
+
+                        // discard points with negative or too small disparity(i.e too far away).
+                        // Terminate the loop once the condition breaks, assuming the point-list
+                        // are already ordered in x coordinate,
+                        if (disparity>max_disparity)
+                            continue;
+                        else if (disparity<min_disparity)
+                            break;
+
+                        // 2a. matching cost for this disparity value
+                        int v_can = RIM2(RY1(candidate_data_idx), RX1(candidate_data_idx));
+                        float Edata = std::fabs(v - v_can);
+    std::cout<< candidate_idx <<'['<< Edata <<"] \t" ;
+
+                        p_current_state->d_list.push_back(disparity);
+                        p_current_state->d_costs.push_back(Edata);
+                        p_current_state->pre_idx.push_back(candidate_idx);
+                    }
+    std::cout<< std::endl;
+                    // 3. done with this target pixel and move on the next
+                    states.push_back(p_current_state);
                 }
 
-                /* 2. calculate the N-1 candiate paths with corresponding optimum cost.*/
-                for (size_t candidate_idx=1; candidate_idx<N+1; candidate_idx++) {
-                    size_t candidate_data_idx = candidate_idx-1;
-                    float x_can = RA1(candidate_data_idx);
-                    float disparity = x-x_can;
+                for (target_idx=1; target_idx<M; target_idx++) {
+                    ptrCost p_last_state = states.back();
+                    ptrCost p_current_state = std::make_shared<Cost>();
 
-                    /* discard points with negative or too small disparity(i.e too far away).
-                       Assuming the point-list are ordered in x coordinate, terminate the
-                       loop once the condition breaks */
-                    if (disparity>max_disparity)
-                        continue;
-                    else if (disparity<min_disparity)
-                        break;
+                    float x = LA1(target_idx);               // pixel angle
+                    int v = LIM2(LY1(target_idx), LX1(target_idx));    // pixel intensity
+                    p_current_state->x = x;
+                    p_current_state->v = v;
+    std::cout<< "[" << x << "]:-----------------\n";
+                    /* 1. setup occlusion/no-match as the first candidate, if there are no
+                       valid candiate matching points, then this will be the only option.*/
+                    {
+                        float min_Edata_last = p_last_state->d_costs[0];
+                        size_t min_E_idx = 0;
 
-
-                    /* 2a. matching cost for this disparity value*/
-                    int v_can = RIM2(RY1(candidate_data_idx), RX1(candidate_data_idx));
-                    float Edata = std::fabs(v - v_can);
-    std::cout<< "\t disparity:" << disparity << '-' << "cost:" << Edata << std::endl;
-    std::cout<< "\t\t";
-
-                    /* 2b. choose a optimum path from state(every possible last disparity) to this disparity */
-                    float min_Etotal_last = p_last_state->d_costs[0];   // again, the fisrt one for occulsion/no-match
-                    size_t min_E_idx = 0;                  // occulsion = default
-    std::cout<< 0<< '['<< min_Etotal_last<<"]\t";
-
-                    for (size_t k=1; k<p_last_state->d_list.size(); k++) {
-                        float disparity_last = p_last_state->d_list[k];
-                        float xdiff = std::abs(x - p_last_state->x);
-                        float diff = disparity_last - disparity;
-                        float Ereg = (diff < 0)?   1e6 :        // ordering constraint
-                                     (diff < 0.05)?  0 :        // no jump no penalty
-                                     (diff < 2)?  Penalty1 : Penalty2;  // large jump
-                        float Etotal = p_last_state->d_costs[k] + Ereg/xdiff;  // cummulated path cost
-        std::cout<< disparity_last<< '['<< Etotal<<"]\t";
-                        if(Etotal < min_Etotal_last) {
-                            min_Etotal_last = Etotal;
-                            min_E_idx = k;
+                        for (size_t k=1; k<p_last_state->d_list.size(); k++)
+                        {
+                            float Edata_last = p_last_state->d_costs[k];  // cummulated path cost
+                            if(Edata_last < min_Edata_last){
+                                min_Edata_last = Edata_last;
+                                min_E_idx = k;
+                            }
                         }
+                        p_current_state->d_list.push_back(0);
+                        p_current_state->d_costs.push_back(min_Edata_last + Penalty_Occ); // constant cost for Occulsion assumption,no penalty for state changes to occulsion
+                        p_current_state->pre_idx.push_back(min_E_idx);
+
                     }
-        std::cout<< "\t min:No." << min_E_idx << '('<<p_last_state->d_list[min_E_idx] <<','<< min_Etotal_last << ')' << std::endl;
 
-                    // 2c. only keep the optimal path from last state to this disparity value
-                    p_current_state->d_list.push_back(disparity);
-                    p_current_state->d_costs.push_back(Edata + min_Etotal_last);
-                    p_current_state->pre_idx.push_back(min_E_idx);
+                    /* 2. calculate the N-1 candiate paths with corresponding optimum cost.*/
+                    for (size_t candidate_idx=1; candidate_idx<N+1; candidate_idx++) {
+                        size_t candidate_data_idx = candidate_idx-1;
+                        float x_can = RA1(candidate_data_idx);
+                        float disparity = x-x_can;
 
+                        /* discard points with negative or too small disparity(i.e too far away).
+                           Assuming the point-list are ordered in x coordinate, terminate the
+                           loop once the condition breaks */
+                        if (disparity>max_disparity)
+                            continue;
+                        else if (disparity<min_disparity)
+                            break;
+
+
+                        /* 2a. matching cost for this disparity value*/
+                        int v_can = RIM2(RY1(candidate_data_idx), RX1(candidate_data_idx));
+                        float Edata = std::fabs(v - v_can);
+        std::cout<< "\t disparity:" << disparity << '-' << "cost:" << Edata << std::endl;
+        std::cout<< "\t\t";
+
+                        /* 2b. choose a optimum path from state(every possible last disparity) to this disparity */
+                        float min_Etotal_last = p_last_state->d_costs[0];   // again, the fisrt one for occulsion/no-match
+                        size_t min_E_idx = 0;                  // occulsion = default
+        std::cout<< 0<< '['<< min_Etotal_last<<"]\t";
+
+                        for (size_t k=1; k<p_last_state->d_list.size(); k++) {
+                            float disparity_last = p_last_state->d_list[k];
+                            float xdiff = std::abs(x - p_last_state->x);
+                            float diff = disparity_last - disparity;
+                            float Ereg = (diff < 0)?   1e6 :        // ordering constraint
+                                         (diff < 0.05)?  0 :        // no jump no penalty
+                                         (diff < 2)?  Penalty1 : Penalty2;  // large jump
+                            float Etotal = p_last_state->d_costs[k] + Ereg/xdiff;  // cummulated path cost
+            std::cout<< disparity_last<< '['<< Etotal<<"]\t";
+                            if(Etotal < min_Etotal_last) {
+                                min_Etotal_last = Etotal;
+                                min_E_idx = k;
+                            }
+                        }
+            std::cout<< "\t min:No." << min_E_idx << '('<<p_last_state->d_list[min_E_idx] <<','<< min_Etotal_last << ')' << std::endl;
+
+                        // 2c. only keep the optimal path from last state to this disparity value
+                        p_current_state->d_list.push_back(disparity);
+                        p_current_state->d_costs.push_back(Edata + min_Etotal_last);
+                        p_current_state->pre_idx.push_back(min_E_idx);
+
+                    }
+    std::cout<< std::endl;
+                    /* 3. done with this target pixel and move on the next*/
+                    states.push_back(p_current_state);
                 }
-std::cout<< std::endl;
-                /* 3. done with this target pixel and move on the next*/
-                states.push_back(p_current_state);
-            }
 
-            /* II. backtrace step
-               1. best score in the final step. */
-            ptrCost p_last_state = states.back();
-            float E_min = std::numeric_limits<float>::max();
-            size_t min_path_idx = 0;
-            for (size_t candidate_idx = 0; candidate_idx < p_last_state->d_costs.size(); candidate_idx++)
-            {
-                float cost = p_last_state->d_costs[candidate_idx];
-                if(E_min > cost)
+                /* II. backtrace step
+                   1. best score in the final step. */
+                ptrCost p_last_state = states.back();
+                float E_min = std::numeric_limits<float>::max();
+                size_t min_path_idx = 0;
+                for (size_t candidate_idx = 0; candidate_idx < p_last_state->d_costs.size(); candidate_idx++)
                 {
-                    E_min = cost;
-                    min_path_idx = candidate_idx;
+                    float cost = p_last_state->d_costs[candidate_idx];
+                    if(E_min > cost)
+                    {
+                        E_min = cost;
+                        min_path_idx = candidate_idx;
+                    }
                 }
-            }
 
-            // 2. preceding state
-            for (size_t state_idx=M-1; state_idx+1>0; state_idx--)
-            {
-                RES1(state_idx) = min_path_idx; //states[state_idx]->d_list[min_path_idx];
+                // 2. preceding state
+                for (size_t state_idx=M-1; state_idx+1>0; state_idx--)
+                {
+                    RES1(state_idx) = min_path_idx; //states[state_idx]->d_list[min_path_idx];
 
-                // corresponding path from previous step
-                min_path_idx = states[state_idx]->pre_idx[min_path_idx];
-            }
+                    // corresponding path from previous step
+                    min_path_idx = states[state_idx]->pre_idx[min_path_idx];
+                }
 
-            auto duration = std::chrono::duration<double>
-                            (std::chrono::system_clock::now() - start);
-        """
-#        import timeit
-#        start = timeit.default_timer()
-        Penalty1 = 10.0
-        Penalty2 = 30.0
-        Penalty_Occ = 150.
-        min_disparity = 0.
-        max_disparity = 140.
+                auto duration = std::chrono::duration<double>
+                                (std::chrono::system_clock::now() - start);
+            """
+    #        import timeit
+    #        start = timeit.default_timer()
+            Penalty1 = 10.0
+            Penalty2 = 30.0
+            Penalty_Occ = 150.
+            min_disparity = 0.
+            max_disparity = 140.
 
-        weave.inline(code,
-                   ['lim', 'rim', 'ly', 'lx', 'la', 'ry', 'rx', 'ra', 'res',
-                   'Penalty1','Penalty2','Penalty_Occ','min_disparity','max_disparity'],
-                    support_code = scode,
-                    compiler='gcc',
-                    extra_compile_args=['-std=gnu++11 -O3'],
-                    verbose=2  )
-#        end = timeit.default_timer()
-#        print 'fps:',1.0/(end - start)
-#        print res
-        return res
+            weave.inline(code,
+                       ['lim', 'rim', 'ly', 'lx', 'la', 'ry', 'rx', 'ra', 'res',
+                       'Penalty1','Penalty2','Penalty_Occ','min_disparity','max_disparity'],
+                        support_code = scode,
+                        compiler='gcc',
+                        extra_compile_args=['-std=gnu++11 -O3'],
+                        verbose=2  )
+    #        end = timeit.default_timer()
+    #        print 'fps:',1.0/(end - start)
+    #        print res
+            return res
 
-    debug = True
-    d_result = np.full_like(Icur, -1)
+        debug = True
+        d_result = np.full_like(Icur, -1)
 
-    if debug:
-        f = plt.figure(num='dpstereo')
-        gs = plt.GridSpec(2,2)
-        al,ar = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
-        ab = f.add_subplot(gs[1,:])
-        ab.autoscale()
+        if debug:
+            f = plt.figure(num='dpstereo')
+            gs = plt.GridSpec(2,2)
+            al,ar = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
+            ab = f.add_subplot(gs[1,:])
+            ab.autoscale()
 
-    for a in [65]: # range(ang_scaler.levels+1):
-        pr,pc = data[a],data_cur[a]
+        for a in [65]: # range(ang_scaler.levels+1):
+            pr,pc = data[a],data_cur[a]
 
-        if pc and pr:
-            pc.sort()
-            pc = zip(*pc)
-            ly, lx = map(np.array, zip(*pc[2]))
-            la = np.array(pc[0])
+            if pc and pr:
+                pc.sort()
+                pc = zip(*pc)
+                ly, lx = map(np.array, zip(*pc[2]))
+                la = np.array(pc[0])
 
-            pr.sort()
-            pr = zip(*pr)
-            ry, rx = map(np.array,zip(*pr[2]))
-            ra = np.array(pr[0])
+                pr.sort()
+                pr = zip(*pr)
+                ry, rx = map(np.array,zip(*pr[2]))
+                ra = np.array(pr[0])
 
-            res = fast_dp(a, ly, lx, la, ry, rx, ra)
-            if np.all(res==0):
-                continue
+                res = fast_dp(a, ly, lx, la, ry, rx, ra)
+                if np.all(res==0):
+                    continue
 
-            lyc,lxc,lac,match_idx = ( np.compress(res!=0, dump) for dump in [ly,lx,la,res] )
-            rxm,rym,ram = ( np.take(dump, match_idx-1) for dump in [rx,ry,ra] )
-            d_result[lyc, lxc] = calcRange(ang_scaler(ram, isInvert=True),
-                                           ang_scaler(lac, isInvert=True))
-            if debug:
-                al.clear(); ar.clear();ab.clear()
-                al.imshow(Icur); ar.imshow(Iref)
-                al.plot(lx, ly,'r.')
-                ar.plot(rx, ry,'b.')
-                tx,ty = trueProj(rx, ry)
-                al.plot(tx,ty,'g.')
+                lyc,lxc,lac,match_idx = ( np.compress(res!=0, dump) for dump in [ly,lx,la,res] )
+                rxm,rym,ram = ( np.take(dump, match_idx-1) for dump in [rx,ry,ra] )
+                d_result[lyc, lxc] = calcRange(ang_scaler(ram, isInvert=True),
+                                               ang_scaler(lac, isInvert=True))
+                if debug:
+                    al.clear(); ar.clear();ab.clear()
+                    al.imshow(Icur); ar.imshow(Iref)
+                    al.plot(lx, ly,'r.')
+                    ar.plot(rx, ry,'b.')
+                    tx,ty = trueProj(rx, ry)
+                    al.plot(tx,ty,'g.')
 
-                ab.plot(la, lim[ly, lx],'r*-')
-                ab.plot(ra, rim[ry, rx],'b*-')
-                ab.plot([lac, ram],
-                        [lim[lyc, lxc],rim[rym, rxm]],'g-')
+                    ab.plot(la, lim[ly, lx],'r*-')
+                    ab.plot(ra, rim[ry, rx],'b*-')
+                    ab.plot([lac, ram],
+                            [lim[lyc, lxc],rim[rym, rxm]],'g-')
 
-                plt.pause(0.01)
-#                plt.waitforbuttonpress()
-        print a
+                    plt.pause(0.01)
+    #                plt.waitforbuttonpress()
+            print a
 
 
