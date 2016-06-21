@@ -43,7 +43,7 @@ if __name__ == "__main__":
         pixel_mask = reduce(np.logical_and,[valid_mask, u>1, v>1, u<w-2, v<h-2])
         px.append(u[pixel_mask].copy())
         py.append(v[pixel_mask].copy())
-        pvm.append(valid_mask.copy())
+        pvm.append(pixel_mask.copy())
 
     pis(valid_mask)
 
