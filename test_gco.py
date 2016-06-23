@@ -77,10 +77,11 @@ if __name__ == "__main__":
         for p_id, p_x,p_y in zip(range(node_cnt), px, py):
             degree = 0
             '''diagonal edge'''
-            if mask_image[p_y-1, p_x+1]:
-                edges.append([p_id, id_LUT[p_y-1, p_x+1]]); degree += 1
-            if mask_image[p_y-1, p_x-1]:
-                edges.append([p_id, id_LUT[p_y-1, p_x-1]]); degree += 1
+            if 0:
+                if mask_image[p_y-1, p_x+1]:
+                    edges.append([p_id, id_LUT[p_y-1, p_x+1]]); degree += 1
+                if mask_image[p_y-1, p_x-1]:
+                    edges.append([p_id, id_LUT[p_y-1, p_x-1]]); degree += 1
 
             if mask_image[p_y-1, p_x]:
                 edges.append([p_id, id_LUT[p_y-1,  p_x ]]); degree += 1
@@ -125,32 +126,19 @@ if __name__ == "__main__":
                      np.ones(u.shape[0])
                      ]).astype('f')/d_result[v,u]*0.119554
     plotxyzrgb(np.vstack([p3d,np.tile(lim[v,u],(3,1))]).T)
-#%%
-    def sample(x):
-        return scipy.ndimage.map_coordinates(rim, [py,px+x], order=1, mode='constant', cval=1000)
 
-    tau = 0.5
-
-    from pyunlocbox import functions,solvers
-    fsmooth = functions.norm_l2(A =lambda x: incidence_matrix.dot(x),
-                                At=lambda x: incidence_matrix.transpose().dot(x))
-    fdata = functions.norm_l1(y=lim[py,px],
-                              A=sample,
-                              lambda_= tau )
-    solver = solvers.forward_backward(method='FISTA', step=0.5/tau)
-    x0 = d_cut
-    ret = solvers.solve([fdata, fsmooth], x0, solver, maxit=100)
 
 #%%
     def warp_d(I, px, py, pv, d):
         """
         linearize the error fuction arround the current depth estimate
         """
+
         Iw = scipy.ndimage.map_coordinates(I, np.vstack([py,px-d]), order=1, mode='nearest')
         Iwf = scipy.ndimage.map_coordinates(I, np.vstack([py,px-(d+1)]), order=1, mode='nearest')
         Iwb = scipy.ndimage.map_coordinates(I, np.vstack([py,px-(d-1)]), order=1, mode='nearest')
         It = Iw - pv       # 'time' derivative'
-        Ig = Iwf + Iwb - 2*Iw
+        Ig = (Iwf - Iwb)/2
         return  It, Ig, Iw
 
     def huber_function(data, epsilon):
@@ -159,7 +147,7 @@ if __name__ == "__main__":
 
     f,a = plt.subplots(1,1,num='tv')
     a.clear()
-    e_data = 5
+    e_data = 1
     Lambda = 1e0
 
     py, px = pvm[0].nonzero()
@@ -173,16 +161,21 @@ if __name__ == "__main__":
     sigma = 0.5     # sigma = 1.0/np.array(np.abs(L).sum(axis=1)).ravel()
 
     d_result = np.full_like(lim, 0)
-    for ok in range(100):
+    p3d = np.vstack([(px-0.5*w)/435.016,
+                     (py-0.5*h)/435.016,
+                      np.ones(px.size)
+                     ]).astype('f')*0.119554
+    for ok in range(10):
         d0 = d.copy()
         # data for error terms
         It, Ig, Iw = warp_d(rim, px, py, pv, d0)
         b = It-d0*Ig
+
+        d_ = d.copy()
         for ik in range(10):
             # dual step
             p += sigma*L.dot(d_)    # gradient ascend
-            normp = np.abs(p)
-            p /= np.maximum(1, normp) # reprojection
+            p /= np.maximum(1, np.abs(p)) # reprojection
 
             # primal step
             d_ = d.copy()           # remember d for later extrapolate
@@ -210,14 +203,74 @@ if __name__ == "__main__":
 #        a.imshow(d_result, cmap='jet')
 #        plt.pause(0.01)
     d_result[pvm[0]] = d
-    v,u = np.where(d_result>0)
-    p3d = np.vstack([(u-0.5*w)/435.016,
-                     (v-0.5*h)/435.016,
-                     np.ones(u.shape[0])
-                     ]).astype('f')/d_result[v,u]*0.119554
-    plotxyzrgb(np.vstack([p3d,np.tile(lim[v,u],(3,1))]).T)
+    plotxyzrgb(np.vstack([p3d/d,np.tile(pv,(3,1))]).T)
+
+#%%
+
+    def InterplatedMinimum(Cost):
+        min_idx = np.argmin(Cost, axis=1)
+        x = np.ogrid[:min_idx.size]
+        max_id = Cost.shape[1]
+
+        min_value = Cost[x, min_idx]
+        min_value_plus1 = Cost[x, np.minimum(min_idx+1, max_id-1)]
+        min_value_minus1 = Cost[x, np.maximum(min_idx-1, 0)]
+        grad = (min_value_plus1 - min_value_minus1)/2.0
+        grad2 = min_value_plus1 + min_value_minus1 - 2*min_value
+        nz_mask = grad2!=0
+
+        base = np.zeros_like(min_idx, dtype=np.float)
+        base[nz_mask] = min_idx[nz_mask] - grad[nz_mask]/grad2[nz_mask]
+    return base/Steps, min_value
+
+    f,a = plt.subplots(1,1,num='tv')
+    a.clear()
 
 
+    Lambda = 1e0
+    beta = 1e-3
+    theta_init,theta_end = 100,1e-3
+
+    py, px = pvm[0].nonzero()
+
+    p = np.zeros(incidence_matrix.shape[0],'f')
+    d = d_cut.astype('f').copy()
+
+    L = incidence_matrix
+    Lt = incidence_matrix.transpose()
+    tau = 1.0/np.array(np.abs(L).sum(axis=0)).ravel()   # edge number for each node
+    sigma = 0.5     # sigma = 1.0/np.array(np.abs(L).sum(axis=1)).ravel()
+
+    d_result = np.full_like(lim, 0)
+    p3d = np.vstack([(px-0.5*w)/435.016,
+                     (py-0.5*h)/435.016,
+                      np.ones(px.size)
+                     ]).astype('f')*0.119554
+    Cost = unary_cost
+    Eaus = np.empty_like(Cost,'f')
+    n = 0
+    i_list = np.linspace(0, 1, Cost.shape[1], endpoint=0)
+    while theta > theta_end:
+        q = (q+sigma*L.dot(d))/(1.0+epsilon*sigma)
+        p /= np.maximum(1, np.abs(p)) # reprojection
+
+        # 2. gradient descent on the primal variable
+        d = d + tau*(a/theta - Lt.dot(q))
+        d = d/(1.0+tau/theta)
+
+        # 3. Fix d, search optimal a
+        for i in xrange(Cost.shape[1]):
+            Eaus[:,i] = Lambda*Cost[:,i] + 0.5/theta*(d-i_list[i])**2
+        a, c = InterplatedMinimum(Eaus)
+
+        theta = theta*(1.0-beta*n)
+        n += 1
+
+        Edata = huber_function(warp_d(rim, px, py, pv, d)[0], e_data).sum()
+        Esmooth = np.abs(L.dot(d)).sum()
+        print Edata, Esmooth
+    d_result[pvm[0]] = d
+    plotxyzrgb(np.vstack([p3d/d,np.tile(pv,(3,1))]).T)
 #%% full-image stereo
     exit()
     max_disp = 150
@@ -247,3 +300,19 @@ if __name__ == "__main__":
                      np.ones(u.shape[0])
                      ]).astype('f')/d_result[v,u]*0.119554
     plotxyzrgb(np.vstack([p3d,np.tile(lim[v,u],(3,1))]).T)
+
+#%%
+    def sample(x):
+        return scipy.ndimage.map_coordinates(rim, [py,px+x], order=1, mode='constant', cval=1000)
+
+    tau = 0.5
+
+    from pyunlocbox import functions,solvers
+    fsmooth = functions.norm_l2(A =lambda x: incidence_matrix.dot(x),
+                                At=lambda x: incidence_matrix.transpose().dot(x))
+    fdata = functions.norm_l1(y=lim[py,px],
+                              A=sample,
+                              lambda_= tau )
+    solver = solvers.forward_backward(method='FISTA', step=0.5/tau)
+    x0 = d_cut
+    ret = solvers.solve([fdata, fsmooth], x0, solver, maxit=100)
