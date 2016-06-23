@@ -33,8 +33,8 @@ if __name__ == "__main__":
 
     dI,px,py,pcolor,pvm = [],[],[],[],[]
     for i,im in enumerate([lim, rim]):
-        d = calcGradient(im)
-#        d = scipy.ndimage.filters.gaussian_gradient_magnitude(im.astype('f'),1)
+#        d = calcGradient(im)
+        d = scipy.ndimage.filters.gaussian_gradient_magnitude(im.astype('f'),1)
         d_abs = np.abs(d)
         valid_mask = d_abs>np.percentile(d_abs,80)
         dI.append( d.copy() )
@@ -44,7 +44,7 @@ if __name__ == "__main__":
         py.append(v[pixel_mask].copy())
         pvm.append(pixel_mask.copy())
 
-    pis(sim(valid_mask))
+    pis(sim(lim,rim))
 
     for vm,d in zip(pvm, dI):
         dt = np.round(d).astype('int')
@@ -95,13 +95,13 @@ if __name__ == "__main__":
 
         return np.array(edges,'i4'), incidence_matrix      # edges array, each row represent an edge
     edges,incidence_matrix = makeEdges(pvm[0])
-
+#%%
     '''2. setup matching cost'''
     max_disp = 150
-
+    min_disp = 10
 
     unary_cost = np.empty([node_cnt, max_disp+1],'i4')       # shape= n_vertices x n_disps
-    y_ind, x_ind = vec(py) , vec(px)-np.arange(max_disp+1)
+    y_ind, x_ind = vec(py) , vec(px)-np.arange(min_disp, max_disp+1)
     unary_cost = np.abs(vec(lim[py, px]) - rim[y_ind, x_ind])  # shape=(n_vertices, n_labels)
     unary_cost[x_ind<0] = 100
 
@@ -109,7 +109,7 @@ if __name__ == "__main__":
     if 0:
         pairwise_cost = -5*np.eye(max_disp+1, dtype='i4')+5        # shape=(n_labels, n_labels)
     else:
-        dx, dy = np.ogrid[:max_disp+1, :max_disp+1]
+        dx, dy = np.ogrid[:(max_disp-min_disp)+1, :(max_disp-min_disp)+1]
         pairwise_cost = np.abs(dx - dy).astype('i4').copy("C")
 
     '''4. do the calculation'''
@@ -117,7 +117,7 @@ if __name__ == "__main__":
 
     '''5. plot '''
     d_result = np.full_like(lim, -1)
-    d_result[pvm[0]] = d_cut
+    d_result[pvm[0]] = d_cut+10
 
     v,u = np.where(reduce(np.logical_and, [d_result>10, d_result<150, pvm[0]]))
     p3d = np.vstack([(u-0.5*w)/435.016,
@@ -140,6 +140,84 @@ if __name__ == "__main__":
     solver = solvers.forward_backward(method='FISTA', step=0.5/tau)
     x0 = d_cut
     ret = solvers.solve([fdata, fsmooth], x0, solver, maxit=100)
+
+#%%
+    def warp_d(I, px, py, pv, d):
+        """
+        linearize the error fuction arround the current depth estimate
+        """
+        Iw = scipy.ndimage.map_coordinates(I, np.vstack([py,px-d]), order=1, mode='nearest')
+        Iwf = scipy.ndimage.map_coordinates(I, np.vstack([py,px-(d+1)]), order=1, mode='nearest')
+        Iwb = scipy.ndimage.map_coordinates(I, np.vstack([py,px-(d-1)]), order=1, mode='nearest')
+        It = Iw - pv       # 'time' derivative'
+        Ig = Iwf + Iwb - 2*Iw
+        return  It, Ig, Iw
+
+    def huber_function(data, epsilon):
+        data = np.abs(data)
+        return np.where(data>=epsilon, data-0.5*epsilon, data**2/(2*epsilon))
+
+    f,a = plt.subplots(1,1,num='tv')
+    a.clear()
+    e_data = 5
+    Lambda = 1e0
+
+    py, px = pvm[0].nonzero()
+    pv = lim[py,px]
+
+    p = np.zeros(incidence_matrix.shape[0],'f')
+    d = d_cut.astype('f').copy()
+    L = incidence_matrix
+    Lt = incidence_matrix.transpose()
+    tau = 1.0/np.array(np.abs(L).sum(axis=0)).ravel()   # edge number for each node
+    sigma = 0.5     # sigma = 1.0/np.array(np.abs(L).sum(axis=1)).ravel()
+
+    d_result = np.full_like(lim, 0)
+    for ok in range(100):
+        d0 = d.copy()
+        # data for error terms
+        It, Ig, Iw = warp_d(rim, px, py, pv, d0)
+        b = It-d0*Ig
+        for ik in range(10):
+            # dual step
+            p += sigma*L.dot(d_)    # gradient ascend
+            normp = np.abs(p)
+            p /= np.maximum(1, normp) # reprojection
+
+            # primal step
+            d_ = d.copy()           # remember d for later extrapolate
+            d -= tau*Lt.dot(p)        # gradient descend
+
+            r = It + Ig*(d-d0)                      # soft-thresholding
+            th = tau*Lambda*Ig**2 + e_data
+            idx1 = np.where(r > th)
+            idx2 = np.where(r < -th)
+            idx3 = np.where(np.abs(r) <= th)
+            d[idx1] -= tau[idx1]*Lambda*Ig[idx1]
+            d[idx2] += tau[idx2]*Lambda*Ig[idx2]
+            d[idx3] = (d[idx3] - tau[idx3]*Lambda/e_data*Ig[idx3]*b[idx3] ) / (1+tau[idx3]*Lambda/e_data*Ig[idx3]**2)
+
+            d = np.maximum(10, d)        # make sure depth stays positive
+            d = np.minimum(160, d)        # clamp
+            d_ = 2*d-d_                       # extrapolate gradient step
+
+            Edata = huber_function(warp_d(rim, px, py, pv, d)[0], e_data).sum()
+            Esmooth = np.abs(L.dot(d)).sum()
+            print Edata, Esmooth
+
+
+#        d_result[pvm[0]] = d
+#        a.imshow(d_result, cmap='jet')
+#        plt.pause(0.01)
+    d_result[pvm[0]] = d
+    v,u = np.where(d_result>0)
+    p3d = np.vstack([(u-0.5*w)/435.016,
+                     (v-0.5*h)/435.016,
+                     np.ones(u.shape[0])
+                     ]).astype('f')/d_result[v,u]*0.119554
+    plotxyzrgb(np.vstack([p3d,np.tile(lim[v,u],(3,1))]).T)
+
+
 #%% full-image stereo
     exit()
     max_disp = 150
