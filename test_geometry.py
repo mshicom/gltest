@@ -19,7 +19,7 @@ import scipy.io
 from vtk_visualizer import *
 
 from scipy import weave
-#%%
+
 
 
 def loaddata1():
@@ -34,6 +34,9 @@ def sample(dIc,x,y):
         return scipy.ndimage.map_coordinates(dIc, (y,x), order=1, cval=np.nan)
 
 def metric(P): return P[:-1]/P[-1]
+def skew(e): return np.array([[  0,  -e[2], e[1]],
+                              [ e[2],    0,-e[0]],
+                              [-e[1], e[0],   0]])
 
 def homogeneous(P):
     return np.lib.pad(P, ((0,1),(0,0)), mode='constant', constant_values=1)
@@ -121,7 +124,7 @@ if __name__ == "__main__":
     angles = [np.rad2deg(np.arctan2(p[1], p[0])) for p in new_ps]
     print angles
 
-    if 0:
+    if 1:
         phi,theta = np.meshgrid(range(78), range(10,170))
         phi = np.deg2rad(phi.ravel())
         theta = np.deg2rad(theta.ravel())
@@ -210,22 +213,23 @@ if __name__ == "__main__":
         p /= p[2]
         return p[0],p[1]
 
-    if 0:
+    if 1:
         f = plt.figure(num='query')
         gs = plt.GridSpec(2,2)
         ar,ac = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
         ab = f.add_subplot(gs[1,:])
         ab.autoscale()
         for a in range(65,ang_scaler.levels+1):
-            ac.clear(); ar.clear();ab.clear()
-            ar.imshow(Iref); ac.imshow(Icur)
+#            ac.clear(); ar.clear();
+            ab.clear()
+            ar.imshow(Iref, interpolation='none'); ac.imshow(Icur, interpolation='none')
             pr,pc = data[a],data_cur[a]
 
             if pc:
                 pc.sort()
                 pc = zip(*pc)
                 y, x = zip(*pc[2])
-                ab.plot(pc[0],Icur[y,x]*255,'r*-')
+                ab.plot(pc[0],Icur[y,x]*255+np.array(pc[1])*50,'r*-')
                 ac.plot(x, y,'r.')
 
             if pr:
@@ -233,7 +237,7 @@ if __name__ == "__main__":
                 pr = zip(*pr)
 
                 y, x = zip(*pr[2])
-                ab.plot(pr[0],Iref[y,x]*255,'b*-')
+                ab.plot(pr[0],Iref[y,x]*255+np.array(pr[1])*50,'b*-')
                 ar.plot(x, y,'b.')
 
                 tx,ty = trueProj(np.array(x), np.array(y))
@@ -284,6 +288,7 @@ if __name__ == "__main__":
     x_off, y_off = map(np.ravel, np.meshgrid(range(-1,2),range(-1,2)))
     min_disparity, max_disparity = 0, 4.0
     import itertools
+    from matplotlib.patches import ConnectionPatch
 
     def fast_dp2(a, ly, lx, la,laz, ry, rx, ra,raz, occ_cost):
         M, N = la.size, ra.size
@@ -293,7 +298,7 @@ if __name__ == "__main__":
         dis_mask = np.logical_or(dis<0, dis>4)
 
         vl, vr = lim[ly, lx].astype('i'), rim[ry,rx].astype('i')
-        Edata = np.abs(vec(vl)-vr)+ np.abs(vec(laz)-raz)*10
+        Edata = np.abs(vec(vl)-vr)+ np.abs(vec(laz)-raz)*50
         Edata[dis_mask] = 65530   # negative disparity should not be considered
 
         vl = np.array([ lim[y+y_off, x+x_off] for y,x in zip(vec(ly),vec(lx)) ],'u1')
@@ -329,7 +334,7 @@ if __name__ == "__main__":
             for (size_t m=1,md=0; m<=M; m++,md++)
                 for(size_t n=1,nd=0; n<=N; n++,nd++ )
                 {
-                    #if 1
+                    #if 0
                         float disparity = L_PTS1(md) - R_PTS1(nd);
                         float Edata = (disparity<min_disparity or disparity> max_disparity)? 65530 : calcErr(&VL2(md,0), &VR2(nd,0));
                         float c1 = C(m-1, n-1) + Edata;
@@ -385,15 +390,17 @@ if __name__ == "__main__":
         return result
 
     debug = True
-    occ_cost = 20
+    occ_cost = 50
     d_result = np.full_like(Icur, np.nan,'f')
 
     if debug:
         f = plt.figure(num='dpstereo')
+
         gs = plt.GridSpec(2,2)
         al,ar = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
         ab = f.add_subplot(gs[1,:])
         ab.autoscale()
+        plt.tight_layout()
 
     for a in  range(ang_scaler.levels+1):#[65]:
         pr,pc = data[a],data_cur[a]
@@ -472,12 +479,19 @@ if __name__ == "__main__":
             assert(np.all(d_result[lyc, lxc]>0))
             if debug:
                 al.clear(); ar.clear();ab.clear()
-                al.imshow(Icur);  #al.set_xlim([lx.min(),lx.max()]); al.set_ylim([ly.min(),ly.max()]);
-                ar.imshow(Iref);  #ar.set_xlim([rx.min(),rx.max()]); ar.set_ylim([ry.min(),ry.max()]);
+                al.imshow(Icur, interpolation='none');  #al.set_xlim([lx.min(),lx.max()]); al.set_ylim([ly.min(),ly.max()]);
+                ar.imshow(Iref, interpolation='none');  #ar.set_xlim([rx.min(),rx.max()]); ar.set_ylim([ry.min(),ry.max()]);
                 ar.plot(rx, ry,'b.')
+
                 tx,ty = trueProj(rx, ry)
-                al.plot(tx,ty,'g.')
+                al.plot(tx,ty,'b.')
                 al.plot(lx, ly,'r.')
+
+                ''' added line between matched pairs'''
+                for x0,y0,x1,y1 in zip(lxc, lyc, rxm, rym):
+                    ar.add_artist(ConnectionPatch(xyA=(x1,y1), xyB=(x0,y0),
+                                          coordsA='data', coordsB='data',
+                                          axesA=ar, axesB=al))
 
                 ab.plot(la, lim[ly, lx],'r*-')
                 ab.plot(ra, rim[ry, rx],'b*-')
