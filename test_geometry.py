@@ -213,7 +213,7 @@ if __name__ == "__main__":
         p /= p[2]
         return p[0],p[1]
 
-    if 1:
+    if 0:
         f = plt.figure(num='query')
         gs = plt.GridSpec(2,2)
         ar,ac = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
@@ -284,7 +284,8 @@ if __name__ == "__main__":
             print 'Ground truth:%f, estimated:%f' % (P[2], Z[pref[1],pref[0]])
 #    test_calcRange()
 #%%
-    lim, rim = (Icur*255).astype('u1').copy(), (Iref*255).astype('u1').copy()
+#    lim, rim = (Icur*255).astype('u1').copy(), (Iref*255).astype('u1').copy()
+    lim, rim = calcGradient(Icur*255), calcGradient(Iref*255)
     x_off, y_off = map(np.ravel, np.meshgrid(range(-1,2),range(-1,2)))
     min_disparity, max_disparity = 0, 4.0
     import itertools
@@ -298,8 +299,10 @@ if __name__ == "__main__":
         dis_mask = np.logical_or(dis<0, dis>4)
 
         vl, vr = lim[ly, lx].astype('i'), rim[ry,rx].astype('i')
-        Edata = np.abs(vec(vl)-vr)+ np.abs(vec(laz)-raz)*50
+        Epos = np.abs(vec(laz)-raz)*50
+        Edata = np.abs(vec(vl)-vr) + Epos
         Edata[dis_mask] = 65530   # negative disparity should not be considered
+
 
         vl = np.array([ lim[y+y_off, x+x_off] for y,x in zip(vec(ly),vec(lx)) ],'u1')
         vr = np.array([ rim[y+y_off, x+x_off] for y,x in zip(vec(ry),vec(rx)) ],'u1')
@@ -337,9 +340,9 @@ if __name__ == "__main__":
                     #if 0
                         float disparity = L_PTS1(md) - R_PTS1(nd);
                         float Edata = (disparity<min_disparity or disparity> max_disparity)? 65530 : calcErr(&VL2(md,0), &VR2(nd,0));
-                        float c1 = C(m-1, n-1) + Edata;
+                        float c1 = C(m-1, n-1) + Edata + EPOS2(md,nd);
                     #else
-                        float c1 = C(m-1, n-1) + EDATA2(md,nd);
+                        float c1 = C(m-1, n-1) + EDATA2(md,nd) + EPOS2(md,nd);
                     #endif
 
                     float c2 = C(m-1, n) + occ_cost;
@@ -382,7 +385,7 @@ if __name__ == "__main__":
         """
 
         weave.inline(code,
-                   ['l_pts', 'r_pts', 'vl','vr','Edata', 'occ_cost','min_disparity','max_disparity','result'],
+                   ['l_pts', 'r_pts', 'vl','vr','Edata', 'Epos','occ_cost','min_disparity','max_disparity','result'],
                     support_code = scode,
                     compiler='gcc',headers=['<chrono>','<cmath>'],
                     extra_compile_args=['-std=gnu++11 -msse2 -O3'],
@@ -390,7 +393,7 @@ if __name__ == "__main__":
         return result
 
     debug = True
-    occ_cost = 50
+    occ_cost = 10
     d_result = np.full_like(Icur, np.nan,'f')
 
     if debug:
@@ -474,9 +477,9 @@ if __name__ == "__main__":
 
             lyc,lxc,lac,match_idx = ( np.compress(res!=-1, dump) for dump in [ly,lx,la,res] )
             rxm,rym,ram = ( np.take(dump, match_idx) for dump in [rx,ry,ra] )
-            d_result[lyc, lxc] = calcRange(ang_scaler(ram, isInvert=True),
-                                           ang_scaler(lac, isInvert=True))
-            assert(np.all(d_result[lyc, lxc]>0))
+#            d_result[lyc, lxc] = calcRange(ang_scaler(ram, isInvert=True),
+#                                           ang_scaler(lac, isInvert=True))
+#            assert(np.all(d_result[lyc, lxc]>0))
             if debug:
                 al.clear(); ar.clear();ab.clear()
                 al.imshow(Icur, interpolation='none');  #al.set_xlim([lx.min(),lx.max()]); al.set_ylim([ly.min(),ly.max()]);
@@ -488,10 +491,10 @@ if __name__ == "__main__":
                 al.plot(lx, ly,'r.')
 
                 ''' added line between matched pairs'''
-                for x0,y0,x1,y1 in zip(lxc, lyc, rxm, rym):
-                    ar.add_artist(ConnectionPatch(xyA=(x1,y1), xyB=(x0,y0),
+                for x0,y0,x1,y1 in zip(lxc, lyc, tx, ty):
+                    al.add_artist(ConnectionPatch(xyA=(x1,y1), xyB=(x0,y0),
                                           coordsA='data', coordsB='data',
-                                          axesA=ar, axesB=al))
+                                          axesA=al, axesB=al))
 
                 ab.plot(la, lim[ly, lx],'r*-')
                 ab.plot(ra, rim[ry, rx],'b*-')
@@ -773,4 +776,7 @@ if __name__ == "__main__":
     #                plt.waitforbuttonpress()
             print a
 
+#%%
 
+    l = np.array([Tcr[2]*(u-cx) -fx*Tcr[0],
+                  Tcr[2]*(v-cy) -fy*Tcr[1]])
