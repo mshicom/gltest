@@ -214,7 +214,7 @@ if __name__ == "__main__":
         return p[0],p[1]
 
     f,a = plt.subplots(1,1,num='all points')
-    a.imshow(Icur)
+    a.imshow(Icur, interpolation='none')
 
     a.plot(puv_cur[:,1], puv_cur[:,0],'b.',ms=5)
     tx,ty = trueProj(puv_ref[:,1], puv_ref[:,0])
@@ -252,6 +252,86 @@ if __name__ == "__main__":
 
             plt.pause(0.01)
             plt.waitforbuttonpress()
+#%% icp
+    from sklearn.neighbors import NearestNeighbors
+    debug = True
+
+    if debug:
+        f,(at,ab) = plt.subplots(2,1,num='icp')
+
+    for a in [65]:#range(ang_scaler.levels+1):
+        pr,pc = data[a],data_cur[a]
+
+        if pc and pr:
+            pc.sort()
+            pc = zip(*pc)
+            pr.sort()
+            pr = zip(*pr)
+
+#            if len(pr[0]) > len(pc[0]):
+#                continue
+
+            ry, rx = map(np.array,zip(*pr[2]))
+            tx, ty = trueProj(rx, ry)
+            cury, curx = map(np.array, zip(*pc[2]))
+            cur = np.array(pc[:2], 'f', copy=True)
+            ref = np.array(pr[:2], 'f', copy=True)
+
+            if debug:
+                at.clear();
+                at.imshow((Icur+Iref)*0.5, interpolation='none')
+                at.plot(rx,ry,'r.')
+                at.plot(curx,cury,'b.')
+
+            '''estimate depth for cur (blue) point, d = cur - ref > 0'''
+            mask = cur[0]>ref[0].min()
+            cur = cur[:, mask]
+            nbrsf = NearestNeighbors(n_neighbors=1, algorithm='auto', n_jobs=4).fit(ref.T)
+            nbrsb = NearestNeighbors(n_neighbors=1, algorithm='auto', n_jobs=4).fit(cur.T)
+
+            ref_ = ref.copy()
+            cur_ = cur.copy()
+            for i in range(20):
+                ''' forward direction: match cur with ref'''
+                _, indf = nbrsf.kneighbors(cur_.T)
+                df =  cur_[0].ravel() - ref_[0,indf].ravel()
+
+                ''' backward direction: match ref with ref, dcur = cur - ref'''
+                _, indb = nbrsb.kneighbors(ref_.T)
+                db =  cur_[0,indb].ravel() - ref_[0].ravel()
+
+                ds = np.hstack([df[df>0]])#db,
+                d = ds.sum()/ds.size
+
+                if debug:
+                    ab.clear()
+                    ab.plot(ref_[0], ref_[1], 'ro')
+                    ab.plot(cur_[0], cur_[1], 'bo')
+                    ''' added line between matched pairs'''
+                    for (x0,y0),ind in zip(cur_.T, indf):
+                        ab.plot([x0, ref_[0,ind]],
+                                [y0, ref_[1,ind]],'g-')
+
+#                    for (x0,y0),ind in zip(ref_.T, indb):
+#                        ab.plot([x0, cur_[0,ind]],
+#                                [y0, cur_[1,ind]],'y-')
+                    plt.pause(0.01)
+                    plt.waitforbuttonpress()
+
+                cur_[0] -= d   # ref = cur - dcur
+#                ref_[0] += d  # cur = ref + dcur
+
+                if d<1e-3:
+                    break
+                print i
+
+            ''' added line between matched pairs'''
+            for x0,y0,ind in zip(curx[mask],cury[mask],indices):
+                at.plot([x0, rx[ind]],
+                        [y0, ry[ind]],'g-')
+            plt.pause(0.01)
+            plt.waitforbuttonpress()
+
 #%% exam the depth calculation
 
     positive_range = lambda x: x if x>0 else x+2*np.pi
