@@ -213,6 +213,13 @@ if __name__ == "__main__":
         p /= p[2]
         return p[0],p[1]
 
+    f,a = plt.subplots(1,1,num='all points')
+    a.imshow(Icur)
+
+    a.plot(puv_cur[:,1], puv_cur[:,0],'b.',ms=5)
+    tx,ty = trueProj(puv_ref[:,1], puv_ref[:,0])
+    a.plot(tx,ty,'r.',ms=5)
+
     if 0:
         f = plt.figure(num='query')
         gs = plt.GridSpec(2,2)
