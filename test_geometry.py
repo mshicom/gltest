@@ -62,7 +62,7 @@ if __name__ == "__main__":
         h,w = frames[0].shape[:2]
 
     fx,fy,cx,cy = K[0,0],K[1,1],K[0,2],K[1,2]
-    refid, curid = 0,8
+    refid, curid = 0,1
     Iref, G0, Z = frames[refid].astype('f')/255.0, wGc[refid].astype('f'), Zs[refid].astype('f')
     Icur, G1  = frames[curid].astype('f')/255.0, wGc[curid].astype('f')
     Iref3 = np.tile(Iref.ravel(), (3,1))
@@ -257,9 +257,16 @@ if __name__ == "__main__":
     debug = True
 
     if debug:
-        f,(at,ab) = plt.subplots(2,1,num='icp')
+        f = plt.figure(num='icp')
 
-    for a in [65]:#range(ang_scaler.levels+1):
+        gs = plt.GridSpec(2,2)
+        al,ar = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
+        ab = f.add_subplot(gs[1,:])
+        ab.autoscale()
+        plt.tight_layout()
+
+
+    for a in [180]:#range(ang_scaler.levels+1):
         pr,pc = data[a],data_cur[a]
 
         if pc and pr:
@@ -278,10 +285,10 @@ if __name__ == "__main__":
             ref = np.array(pr[:2], 'f', copy=True)
 
             if debug:
-                at.clear();
-                at.imshow((Icur+Iref)*0.5, interpolation='none')
-                at.plot(rx,ry,'r.')
-                at.plot(curx,cury,'b.')
+                al.clear(); ar.clear();
+                al.imshow(Icur, interpolation='none'); al.plot(curx,cury,'b.')
+                ar.imshow(Iref, interpolation='none'); ar.plot(rx,ry,'r.')
+
 
             '''estimate depth for cur (blue) point, d = cur - ref > 0'''
             mask = cur[0]>ref[0].min()
@@ -300,7 +307,7 @@ if __name__ == "__main__":
                 _, indb = nbrsb.kneighbors(ref_.T)
                 db =  cur_[0,indb].ravel() - ref_[0].ravel()
 
-                ds = np.hstack([df[df>0]])#db,
+                ds = np.hstack([df])#db,
                 d = ds.sum()/ds.size
 
                 if debug:
@@ -325,10 +332,14 @@ if __name__ == "__main__":
                     break
                 print i
 
-            ''' added line between matched pairs'''
-            for x0,y0,ind in zip(curx[mask],cury[mask],indices):
-                at.plot([x0, rx[ind]],
-                        [y0, ry[ind]],'g-')
+            ''' draw connection'''
+            if debug:
+                ''' added line between matched pairs'''
+                for x0,y0,ind in zip(curx[mask],cury[mask],indf):
+                    ar.add_artist(ConnectionPatch(xyA=(rx[ind],ry[ind]), xyB=(x0,y0),
+                                          coordsA='data', coordsB='data',
+                                          axesA=ar, axesB=al))
+
             plt.pause(0.01)
             plt.waitforbuttonpress()
 
