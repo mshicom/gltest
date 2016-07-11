@@ -207,11 +207,19 @@ if __name__ == "__main__":
 
 #%% demo: points on the scanline
 
-    def trueProj(x, y, G=cGr):
+    def trueProj(x, y, G=cGr, Z=Z):
         p0 = np.array([(x-cx)/fx, (y-cy)/fy, np.ones(len(x))])*Z[y,x]
         p =  K.dot(G[0:3,0:3].dot(p0)+G[0:3,3][:,np.newaxis])
         p /= p[2]
         return p[0],p[1]
+
+    def trueAssignmentForCur(curx, cury, rx, ry):
+        tx, ty = trueProj(rx, ry)
+        tp = np.round([tx,ty])
+        tree = NearestNeighbors(n_neighbors=1, algorithm='auto', n_jobs=4).fit(tp.T)
+        dis, ind = tree.kneighbors(np.array([curx, cury]).T)
+        ind[dis>0] = -1
+        return ind
 
     f,a = plt.subplots(1,1,num='all points')
     a.imshow(Icur, interpolation='none')
@@ -254,6 +262,8 @@ if __name__ == "__main__":
             plt.waitforbuttonpress()
 #%% icp
     from sklearn.neighbors import NearestNeighbors
+    from matplotlib.patches import ConnectionPatch
+
     debug = True
 
     if debug:
@@ -265,6 +275,7 @@ if __name__ == "__main__":
         ab.autoscale()
         plt.tight_layout()
 
+    lim, rim = calcGradient(Icur), calcGradient(Iref) #Icur, Iref
 
     for a in [180]:#range(ang_scaler.levels+1):
         pr,pc = data[a],data_cur[a]
@@ -281,33 +292,37 @@ if __name__ == "__main__":
             ry, rx = map(np.array,zip(*pr[2]))
             tx, ty = trueProj(rx, ry)
             cury, curx = map(np.array, zip(*pc[2]))
-            cur = np.array(pc[:2], 'f', copy=True)
-            ref = np.array(pr[:2], 'f', copy=True)
+            idInRef = trueAssignmentForCur(curx, cury, rx, ry)
+
+            vl, vr = lim[cury, curx], rim[ry,rx]
+            cur = np.vstack([pc[:2], 2*vl])
+            ref = np.vstack([pr[:2], 2*vr])
 
             if debug:
                 al.clear(); ar.clear();
-                al.imshow(Icur, interpolation='none'); al.plot(curx,cury,'b.')
+                al.imshow(Icur, interpolation='none'); al.plot(curx,cury,'b.');al.plot(tx,ty,'g.')
                 ar.imshow(Iref, interpolation='none'); ar.plot(rx,ry,'r.')
 
 
             '''estimate depth for cur (blue) point, d = cur - ref > 0'''
             mask = cur[0]>ref[0].min()
             cur = cur[:, mask]
-            nbrsf = NearestNeighbors(n_neighbors=1, algorithm='auto', n_jobs=4).fit(ref.T)
-            nbrsb = NearestNeighbors(n_neighbors=1, algorithm='auto', n_jobs=4).fit(cur.T)
+
+            nbrsf = NearestNeighbors(n_neighbors=1, algorithm='auto', n_jobs=4).fit(ref[:2,:].T)
+            nbrsb = NearestNeighbors(n_neighbors=1, algorithm='auto', n_jobs=4).fit(cur[:2,:].T)
 
             ref_ = ref.copy()
             cur_ = cur.copy()
-            for i in range(20):
+            for i in range(0):
                 ''' forward direction: match cur with ref'''
-                _, indf = nbrsf.kneighbors(cur_.T)
+                _, indf = nbrsf.kneighbors(cur_[:3,:].T)
                 df =  cur_[0].ravel() - ref_[0,indf].ravel()
 
-                ''' backward direction: match ref with ref, dcur = cur - ref'''
-                _, indb = nbrsb.kneighbors(ref_.T)
-                db =  cur_[0,indb].ravel() - ref_[0].ravel()
+#                ''' backward direction: match ref with ref, dcur = cur - ref'''
+#                _, indb = nbrsb.kneighbors(ref_.T)
+#                db =  cur_[0,indb].ravel() - ref_[0].ravel()
 
-                ds = np.hstack([df])#db,
+                ds = df #np.hstack([df])#db,
                 d = ds.sum()/ds.size
 
                 if debug:
@@ -315,7 +330,7 @@ if __name__ == "__main__":
                     ab.plot(ref_[0], ref_[1], 'ro')
                     ab.plot(cur_[0], cur_[1], 'bo')
                     ''' added line between matched pairs'''
-                    for (x0,y0),ind in zip(cur_.T, indf):
+                    for (x0,y0),ind in zip(cur_[:2].T, indf):
                         ab.plot([x0, ref_[0,ind]],
                                 [y0, ref_[1,ind]],'g-')
 
@@ -336,9 +351,9 @@ if __name__ == "__main__":
             if debug:
                 ''' added line between matched pairs'''
                 for x0,y0,ind in zip(curx[mask],cury[mask],indf):
-                    ar.add_artist(ConnectionPatch(xyA=(rx[ind],ry[ind]), xyB=(x0,y0),
+                    al.add_artist(ConnectionPatch(xyA=(tx[ind],ty[ind]), xyB=(x0,y0),
                                           coordsA='data', coordsB='data',
-                                          axesA=ar, axesB=al))
+                                          axesA=al, axesB=al))
 
             plt.pause(0.01)
             plt.waitforbuttonpress()
