@@ -62,7 +62,7 @@ if __name__ == "__main__":
         h,w = frames[0].shape[:2]
 
     fx,fy,cx,cy = K[0,0],K[1,1],K[0,2],K[1,2]
-    refid, curid = 0,1
+    refid, curid = 0,9
     Iref, G0, Z = frames[refid].astype('f')/255.0, wGc[refid].astype('f'), Zs[refid].astype('f')
     Icur, G1  = frames[curid].astype('f')/255.0, wGc[curid].astype('f')
     Iref3 = np.tile(Iref.ravel(), (3,1))
@@ -204,6 +204,46 @@ if __name__ == "__main__":
         v_int = np.round(a)
         data_cur[int(v_int)].append((np.double(az), np.double(a - v_int) ,tuple(p)))
 
+#%% exam the depth calculation
+
+    positive_range = lambda x: np.where(x>0, x, x+2*np.pi) #x if x>0 else x+2*np.pi
+    def calcAngle(x, y, G=None):
+        p0 = np.array([(x-cx)/fx, (y-cy)/fy, np.ones(len(x))])
+        if not G is None:
+            p0 = G[0:3,0:3].dot(p0)
+        p = M.dot(p0)
+        theta = positive_range(np.arctan2(p[1], p[0]))
+        phi = positive_range(np.arctan2(np.sqrt(p[0]**2+p[1]**2), p[2]))
+        return theta, phi
+
+    def calcRange(ar, ac):
+        B = np.linalg.norm(Trc)
+        c = np.pi-ac
+        b = ac-ar
+        return B*np.sin(c)/np.sin(b)
+
+    def rangetoAngle(ac, r):
+        B = np.linalg.norm(Trc)
+        c = np.pi-ac
+        return ac-np.arcsin(B/r*np.sin(c))
+
+    def test_calcRange():
+        f,a = plt.subplots(1, 1, num='test_depth')
+        a.imshow(sim(Iref, Icur))
+        while 1:
+            plt.pause(0.01)
+            pref = np.round(plt.ginput(1, timeout=-1)[0])
+            a.plot(pref[0], pref[1],'r.',ms=2)
+            pcur = trueProj(pref[0], pref[1])
+            a.plot(pcur[0]+640, pcur[1],'b.',ms=2)
+            a_ref = calcAngle(pref[0], pref[1])
+            a_cur = calcAngle(pcur[0], pcur[1], rGc)
+            prange = calcRange(a_ref[1], a_cur[1])
+            P = snormalize(np.array([(pref[0]-cx)/fx, (pref[1]-cy)/fy, 1.0]))*prange
+            print 'Ground truth:%f, estimated:%f' % (P[2], Z[pref[1],pref[0]])
+#    test_calcRange()
+
+
 
 #%% demo: points on the scanline
 
@@ -213,6 +253,7 @@ if __name__ == "__main__":
         p /= p[2]
         return p[0],p[1]
 
+    from sklearn.neighbors import NearestNeighbors
     def trueAssignmentForCur(curx, cury, rx, ry):
         tx, ty = trueProj(rx, ry)
         tp = np.round([tx,ty])
@@ -221,12 +262,15 @@ if __name__ == "__main__":
         ind[dis>0] = -1
         return ind
 
-    f,a = plt.subplots(1,1,num='all points')
-    a.imshow(Icur, interpolation='none')
+    f,a = plt.subplots(1,2,num='all points')
+    a[0].imshow(Icur, interpolation='none')
 
-    a.plot(puv_cur[:,1], puv_cur[:,0],'b.',ms=5)
+    a[0].plot(puv_cur[:,1], puv_cur[:,0],'b.',ms=5)
     tx,ty = trueProj(puv_ref[:,1], puv_ref[:,0])
-    a.plot(tx,ty,'r.',ms=5)
+    a[0].plot(tx,ty,'g.',ms=5)
+
+    a[1].imshow(Iref, interpolation='none')
+    a[1].plot(puv_ref[:,1], puv_ref[:,0],'r.',ms=5)
 
     if 0:
         f = plt.figure(num='query')
@@ -234,11 +278,11 @@ if __name__ == "__main__":
         ar,ac = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
         ab = f.add_subplot(gs[1,:])
         ab.autoscale()
-        for a in range(65,ang_scaler.levels+1):
+        for ang in range(65,ang_scaler.levels+1):
 #            ac.clear(); ar.clear();
             ab.clear()
             ar.imshow(Iref, interpolation='none'); ac.imshow(Icur, interpolation='none')
-            pr,pc = data[a],data_cur[a]
+            pr,pc = data[ang],data_cur[ang]
 
             if pc:
                 pc.sort()
@@ -260,10 +304,52 @@ if __name__ == "__main__":
 
             plt.pause(0.01)
             plt.waitforbuttonpress()
-#%% icp
-    from sklearn.neighbors import NearestNeighbors
-    from matplotlib.patches import ConnectionPatch
 
+    if 1:
+        from matplotlib.patches import ConnectionPatch
+        d_result = np.full_like(Icur, np.nan,'f')
+        for ang in range(ang_scaler.levels+1):
+            pr,pc = data[ang],data_cur[ang]
+
+            if pc and pr:
+                pc.sort()
+                pc = zip(*pc)
+                la,laz = np.array(pc[0]), np.array(pc[1])
+
+                pr.sort()
+                pr = zip(*pr)
+                ry, rx = map(np.array,zip(*pr[2]))
+                ra, raz = np.array(pr[0]), np.array(pr[1])
+
+
+                cury, curx = map(np.array, zip(*pc[2]))
+                idInRef = trueAssignmentForCur(curx, cury, rx, ry).ravel()
+
+                lyc,lxc,lac,match_idx = ( np.compress(idInRef!=-1, dump) for dump in [cury,curx,la,idInRef] )
+                rxm,rym,ram = ( np.take(dump, match_idx) for dump in [rx,ry,ra] )
+#                d_result[lyc, lxc] = calcRange(np.deg2rad(ang_scaler(ram, isInvert=True)),
+#                                               np.deg2rad(ang_scaler(lac, isInvert=True)))
+
+                ac = calcAngle(lxc,lyc,rGc)[1]
+                ar = calcAngle(rxm,rym)[1]
+
+                d_result[lyc, lxc] = calcRange(ar,ac)
+#                ''' added line between matched pairs'''
+#                tx,ty = trueProj(rx, ry)
+#                for x0,y0,ind in zip(lxc,lyc,match_idx):
+#                    a.add_artist(ConnectionPatch(xyA=(tx[ind],ty[ind]), xyB=(x0,y0),
+#                                          coordsA='data', coordsB='data',
+#                                          axesA=a, axesB=a))
+#                plt.pause(0.01)
+#                plt.waitforbuttonpress()
+                print ang
+
+        v,u = np.where(~np.isnan(d_result))
+        p3d = snormalize(np.array([(u-cx)/fx, (v-cy)/fy, np.ones(len(u))]))*d_result[v,u]
+        plotxyzrgb(np.vstack([p3d,np.tile(Icur[v,u]*255,(3,1))]).T)
+#%% icp
+    from matplotlib.patches import ConnectionPatch
+    from scipy.optimize import linear_sum_assignment
     debug = True
 
     if debug:
@@ -292,9 +378,13 @@ if __name__ == "__main__":
             ry, rx = map(np.array,zip(*pr[2]))
             tx, ty = trueProj(rx, ry)
             cury, curx = map(np.array, zip(*pc[2]))
-            idInRef = trueAssignmentForCur(curx, cury, rx, ry)
+
+#            idInRef = trueAssignmentForCur(curx, cury, rx, ry)
 
             vl, vr = lim[cury, curx], rim[ry,rx]
+            cost = np.abs(vec(vl)-vr)
+#            row_ind, col_ind = linear_sum_assignment(cost)
+
             cur = np.vstack([pc[:2], 2*vl])
             ref = np.vstack([pr[:2], 2*vr])
 
@@ -308,14 +398,15 @@ if __name__ == "__main__":
             mask = cur[0]>ref[0].min()
             cur = cur[:, mask]
 
-            nbrsf = NearestNeighbors(n_neighbors=1, algorithm='auto', n_jobs=4).fit(ref[:2,:].T)
-            nbrsb = NearestNeighbors(n_neighbors=1, algorithm='auto', n_jobs=4).fit(cur[:2,:].T)
+            data_idx = 2
+            nbrsf = NearestNeighbors(n_neighbors=1, algorithm='auto', n_jobs=4).fit(ref[:data_idx,:].T)
+            nbrsb = NearestNeighbors(n_neighbors=1, algorithm='auto', n_jobs=4).fit(cur[:data_idx,:].T)
 
             ref_ = ref.copy()
             cur_ = cur.copy()
-            for i in range(0):
+            for i in range(20):
                 ''' forward direction: match cur with ref'''
-                _, indf = nbrsf.kneighbors(cur_[:3,:].T)
+                _, indf = nbrsf.kneighbors(cur_[:data_idx,:].T)
                 df =  cur_[0].ravel() - ref_[0,indf].ravel()
 
 #                ''' backward direction: match ref with ref, dcur = cur - ref'''
@@ -350,52 +441,18 @@ if __name__ == "__main__":
             ''' draw connection'''
             if debug:
                 ''' added line between matched pairs'''
-                for x0,y0,ind in zip(curx[mask],cury[mask],indf):
+#                for x0,y0,ind in zip(curx[mask],cury[mask],indf):
+#                    al.add_artist(ConnectionPatch(xyA=(tx[ind],ty[ind]), xyB=(x0,y0),
+#                                          coordsA='data', coordsB='data',
+#                                          axesA=al, axesB=al))
+                for x0,y0,ind in zip(curx[row_ind],cury[row_ind],col_ind):
                     al.add_artist(ConnectionPatch(xyA=(tx[ind],ty[ind]), xyB=(x0,y0),
                                           coordsA='data', coordsB='data',
                                           axesA=al, axesB=al))
-
             plt.pause(0.01)
             plt.waitforbuttonpress()
 
-#%% exam the depth calculation
 
-    positive_range = lambda x: x if x>0 else x+2*np.pi
-    def calcAngle(x, y, G=None):
-        p0 = np.array([(x-cx)/fx, (y-cy)/fy, 1.0])
-        if not G is None:
-            p0 = G[0:3,0:3].dot(p0)
-        p = M.dot(p0)
-        theta = positive_range(np.arctan2(p[1], p[0]))
-        phi = positive_range(np.arctan2(np.sqrt(p[0]**2+p[1]**2), p[2]))
-        return theta, phi
-
-    def calcRange(ar, ac):
-        B = np.linalg.norm(Trc)
-        c = np.pi-ac
-        b = ac-ar
-        return B*np.sin(c)/np.sin(b)
-
-    def rangetoAngle(ac, r):
-        B = np.linalg.norm(Trc)
-        c = np.pi-ac
-        return ac-np.arcsin(B/r*np.sin(c))
-
-    def test_calcRange():
-        f,a = plt.subplots(1, 1, num='test_depth')
-        a.imshow(sim(Iref, Icur))
-        while 1:
-            plt.pause(0.01)
-            pref = np.round(plt.ginput(1, timeout=-1)[0])
-            a.plot(pref[0], pref[1],'r.',ms=2)
-            pcur = trueProj(pref[0], pref[1])
-            a.plot(pcur[0]+640, pcur[1],'b.',ms=2)
-            a_ref = calcAngle(pref[0], pref[1])
-            a_cur = calcAngle(pcur[0], pcur[1], rGc)
-            prange = calcRange(a_ref[1], a_cur[1])
-            P = snormalize(np.array([(pref[0]-cx)/fx, (pref[1]-cy)/fy, 1.0]))*prange
-            print 'Ground truth:%f, estimated:%f' % (P[2], Z[pref[1],pref[0]])
-#    test_calcRange()
 #%%
 #    lim, rim = (Icur*255).astype('u1').copy(), (Iref*255).astype('u1').copy()
     lim, rim = calcGradient(Icur*255), calcGradient(Iref*255)
