@@ -361,7 +361,7 @@ if __name__ == "__main__":
         ab.autoscale()
         plt.tight_layout()
 
-    lim, rim = calcGradient(Icur), calcGradient(Iref) #Icur, Iref
+    lim, rim = Icur, Iref #calcGradient(Icur), calcGradient(Iref)
 
     for a in [180]:#range(ang_scaler.levels+1):
         pr,pc = data[a],data_cur[a]
@@ -372,83 +372,29 @@ if __name__ == "__main__":
             pr.sort()
             pr = zip(*pr)
 
-#            if len(pr[0]) > len(pc[0]):
-#                continue
-
             ry, rx = map(np.array,zip(*pr[2]))
             tx, ty = trueProj(rx, ry)
             cury, curx = map(np.array, zip(*pc[2]))
 
-#            idInRef = trueAssignmentForCur(curx, cury, rx, ry)
+            ca,ra = np.array(pc[0]), np.array(pr[0])
+            cb,rb = np.array(pc[1]), np.array(pr[1])
+
+            idInRef = trueAssignmentForCur(curx, cury, rx, ry).ravel()
+
+            cyc,cxc,cac,match_idx = ( np.compress(idInRef!=-1, dump) for dump in [cury,curx,ca,idInRef] )
+            rxc,ryc,rac = ( np.take(dump, match_idx) for dump in [rx,ry,ra] )
 
             vl, vr = lim[cury, curx], rim[ry,rx]
-            cost = np.abs(vec(vl)-vr)
-#            row_ind, col_ind = linear_sum_assignment(cost)
 
-            cur = np.vstack([pc[:2], 2*vl])
-            ref = np.vstack([pr[:2], 2*vr])
+            al.clear(); ar.clear();
+            al.imshow(Icur, interpolation='none'); al.plot(curx,cury,'b.');al.plot(tx,ty,'g.')
+            ar.imshow(Iref, interpolation='none'); ar.plot(rx,ry,'r.')
 
-            if debug:
-                al.clear(); ar.clear();
-                al.imshow(Icur, interpolation='none'); al.plot(curx,cury,'b.');al.plot(tx,ty,'g.')
-                ar.imshow(Iref, interpolation='none'); ar.plot(rx,ry,'r.')
+            ab.plot(ca,cb,'ro')
+            ab.plot(ra,rb,'bs')
 
+            ab.plot([cac,rac],[cb[idInRef!=-1],rb[match_idx]],'g-')
 
-            '''estimate depth for cur (blue) point, d = cur - ref > 0'''
-            mask = cur[0]>ref[0].min()
-            cur = cur[:, mask]
-
-            data_idx = 2
-            nbrsf = NearestNeighbors(n_neighbors=1, algorithm='auto', n_jobs=4).fit(ref[:data_idx,:].T)
-            nbrsb = NearestNeighbors(n_neighbors=1, algorithm='auto', n_jobs=4).fit(cur[:data_idx,:].T)
-
-            ref_ = ref.copy()
-            cur_ = cur.copy()
-            for i in range(20):
-                ''' forward direction: match cur with ref'''
-                _, indf = nbrsf.kneighbors(cur_[:data_idx,:].T)
-                df =  cur_[0].ravel() - ref_[0,indf].ravel()
-
-#                ''' backward direction: match ref with ref, dcur = cur - ref'''
-#                _, indb = nbrsb.kneighbors(ref_.T)
-#                db =  cur_[0,indb].ravel() - ref_[0].ravel()
-
-                ds = df #np.hstack([df])#db,
-                d = ds.sum()/ds.size
-
-                if debug:
-                    ab.clear()
-                    ab.plot(ref_[0], ref_[1], 'ro')
-                    ab.plot(cur_[0], cur_[1], 'bo')
-                    ''' added line between matched pairs'''
-                    for (x0,y0),ind in zip(cur_[:2].T, indf):
-                        ab.plot([x0, ref_[0,ind]],
-                                [y0, ref_[1,ind]],'g-')
-
-#                    for (x0,y0),ind in zip(ref_.T, indb):
-#                        ab.plot([x0, cur_[0,ind]],
-#                                [y0, cur_[1,ind]],'y-')
-                    plt.pause(0.01)
-                    plt.waitforbuttonpress()
-
-                cur_[0] -= d   # ref = cur - dcur
-#                ref_[0] += d  # cur = ref + dcur
-
-                if d<1e-3:
-                    break
-                print i
-
-            ''' draw connection'''
-            if debug:
-                ''' added line between matched pairs'''
-#                for x0,y0,ind in zip(curx[mask],cury[mask],indf):
-#                    al.add_artist(ConnectionPatch(xyA=(tx[ind],ty[ind]), xyB=(x0,y0),
-#                                          coordsA='data', coordsB='data',
-#                                          axesA=al, axesB=al))
-                for x0,y0,ind in zip(curx[row_ind],cury[row_ind],col_ind):
-                    al.add_artist(ConnectionPatch(xyA=(tx[ind],ty[ind]), xyB=(x0,y0),
-                                          coordsA='data', coordsB='data',
-                                          axesA=al, axesB=al))
             plt.pause(0.01)
             plt.waitforbuttonpress()
 
