@@ -41,6 +41,8 @@ def skew(e): return np.array([[  0,  -e[2], e[1]],
 def isScalar(obj):
     return not hasattr(obj, "__len__")
 
+def relPos(wG0, wG1):
+    return np.dot(np.linalg.inv(wG0), wG1)
 
 
 def homogeneous(P):
@@ -49,6 +51,7 @@ def homogeneous(P):
 normalize = lambda x:x/np.linalg.norm(x)
 snormalize = lambda x:x/np.linalg.norm(x, axis=0)
 vec = lambda x:np.reshape(x,(-1,1))
+inv = np.linalg.inv
 class Scaler:
     def __init__(self, vmin, vmax, levels):
         self.min, self.max, self.levels = (vmin, vmax, levels)
@@ -67,6 +70,7 @@ if __name__ == "__main__":
         h,w = frames[0].shape[:2]
 
     fx,fy,cx,cy = K[0,0],K[1,1],K[0,2],K[1,2]
+
     refid, curid = 0,9
     Iref, G0, Z = frames[refid].astype('f')/255.0, wGc[refid].astype('f'), Zs[refid].astype('f')
     Icur, G1  = frames[curid].astype('f')/255.0, wGc[curid].astype('f')
@@ -80,7 +84,6 @@ if __name__ == "__main__":
 
     def backproject(x, y, K=K):
         fx,fy,cx,cy = K[0,0],K[1,1],K[0,2],K[1,2]
-
         if isScalar(x):
             return np.array([(x-cx)/fx, (y-cy)/fy, 1])
         else:
@@ -287,10 +290,6 @@ if __name__ == "__main__":
         v_int = np.round(a)
         data_cur[int(v_int)].append((np.double(az), np.double(a - v_int) ,tuple(p)))
 
-#%% exam the depth calculation
-
-
-
 
 #%% demo: points on the scanline
 
@@ -390,6 +389,84 @@ if __name__ == "__main__":
         v,u = np.where(~np.isnan(d_result))
         p3d = snormalize(np.array([(u-cx)/fx, (v-cy)/fy, np.ones(len(u))]))*d_result[v,u]
         plotxyzrgb(np.vstack([p3d,np.tile(Icur[v,u]*255,(3,1))]).T)
+
+#%%
+
+    class Frame(object):
+        __slots__ = ['im', 'px', 'py', 'p_cnt','P','v','Z','theta', 'phi', 'wGc']
+        def __init__(self, img, wGc=np.eye(4), Z=None):
+            self.im = img.copy()
+            self.wGc = wGc.copy()
+            if not Z is None:
+                self.Z = Z.copy()
+
+        def extractPts(self, gthreshold):
+            h,w = self.im.shape
+
+            '''extract gradient pixel'''
+            dx,dy = np.gradient(self.im.astype('f'))
+            grad = np.sqrt(dx**2+dy**2)
+            u, v = np.meshgrid(range(w),range(h))
+            mask = reduce(np.logical_and, [grad>gthreshold, u>1, v>1, u<w-2, v<h-2])
+            y,x = np.where(mask)
+            self.py, self.px = y,x
+            self.p_cnt = len(x)
+            self.P = np.vstack([(x-cx)/fx,
+                                (y-cy)/fy,
+                                np.ones(self.p_cnt)])
+            patt = [(y,x),(y-2,x),(y-1,x+1),(y,x+2),(y+1,x+1),(y+2,x),(y+1,x-1),(y,x-2),(y-1,x-1)]
+            self.v = np.vstack([self.im[ind] for ind in patt]).T
+
+        def calcPtsAngle(self, M):
+            p0 = self.wGc[0:3,0:3].dot(self.P)
+            p = M.dot(p0)
+            self.theta = positive_range(np.arctan2(p[1], p[0]))
+            self.phi = positive_range(np.arctan2(np.sqrt(p[0]**2 + p[1]**2), p[2]))
+
+        def ProjTo(self, G):
+            assert(self.Z is not None)
+            P0 = self.P*self.Z[self.py, self.px]
+            P1 = K.dot(G[0:3,0:3].dot(P0)+G[0:3,3][:,np.newaxis])
+            return P1[:2]/P1[2]
+
+    refid = 4
+    G0 = wGc[refid]
+    grad = calcGradient(frames[refid])
+    gthreshold = np.percentile(grad, 80)
+
+    ''' set up the reference Frame'''
+    fs = []
+    fs.append(Frame(img=frames[refid], Z=Zs[refid]))
+    fs[0].extractPts(gthreshold)
+
+    ''' set up matching Frame'''
+    seq = [0,9]
+    for fid in seq:
+        f = Frame(frames[fid], relPos(G0, wGc[fid]), Z=Zs[fid])
+        f.extractPts(gthreshold)
+        fs.append(f)
+
+    '''debug plot'''
+    if 1:
+        fig = plt.figure(num='all image'); fig.clear()
+        gs = plt.GridSpec(len(seq),2)
+        a =  fig.add_subplot(gs[:,0])
+        b = [fig.add_subplot(gs[sp,1]) for sp in range(len(seq))]
+
+        ''' ref image'''
+        fref = fs[0]
+        a.imshow(fref.im, interpolation='none')
+        a.plot(fref.px, fref.py, 'r.' )
+
+        ''' matching images'''
+        for i,sp in enumerate(b):
+            fcur = fs[i+1]
+            sp.imshow(fcur.im, interpolation='none')
+            sp.plot(fcur.px, fcur.py, 'b.', ms=2)
+            pref = fref.ProjTo(inv(fcur.wGc))
+            sp.plot(pref[0], pref[1], 'r.', ms=2)
+        fig.tight_layout()
+
 #%% icp
     from matplotlib.patches import ConnectionPatch
     from scipy.optimize import linear_sum_assignment
