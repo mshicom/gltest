@@ -22,6 +22,7 @@ from scipy import weave
 
 
 
+
 def loaddata1():
     data = scipy.io.loadmat('data.mat')
     frames, = data['I']
@@ -37,6 +38,10 @@ def metric(P): return P[:-1]/P[-1]
 def skew(e): return np.array([[  0,  -e[2], e[1]],
                               [ e[2],    0,-e[0]],
                               [-e[1], e[0],   0]])
+def isScalar(obj):
+    return not hasattr(obj, "__len__")
+
+
 
 def homogeneous(P):
     return np.lib.pad(P, ((0,1),(0,0)), mode='constant', constant_values=1)
@@ -67,15 +72,24 @@ if __name__ == "__main__":
     Icur, G1  = frames[curid].astype('f')/255.0, wGc[curid].astype('f')
     Iref3 = np.tile(Iref.ravel(), (3,1))
     Icur3 = np.tile(Icur.ravel(), (3,1))
-#%%
+
     cGr = np.dot(np.linalg.inv(wGc[curid]), wGc[refid])
     Rcr, Tcr = cGr[0:3,0:3], cGr[0:3,3]
     rGc = np.dot(np.linalg.inv(wGc[refid]), wGc[curid])
     Rrc, Trc = rGc[0:3,0:3], rGc[0:3,3]
 
+    def backproject(x, y, K=K):
+        fx,fy,cx,cy = K[0,0],K[1,1],K[0,2],K[1,2]
+
+        if isScalar(x):
+            return np.array([(x-cx)/fx, (y-cy)/fy, 1])
+        else:
+            x,y = x.ravel(), y.ravel()
+            return np.array([(x-cx)/fx, (y-cy)/fy, np.ones(len(x))])
+
+#%%
     u,v = np.meshgrid(range(w), range(h))
-    u,v = (u.ravel()-cx)/fx, (v.ravel()-cy)/fy
-    pref = np.vstack([u, v, np.ones(w*h) ]).astype('f')
+    pref = backproject(u,v).astype('f')
     pt = pref*Z.ravel()
     p0 = np.vstack([pt,Iref3])
 
@@ -97,33 +111,43 @@ if __name__ == "__main__":
     ps = np.array([(p[0]-cx)/fx,(p[1]-cy)/fy,1])*Z[p[1],p[0]]
     vis.AddLine([0,0,0], ps)
     vis.AddLine(Trc, ps)
+
+
 #%% calculate the
-    '''define vectors correspond to 4 image corners '''
-    corners = [[0,0],[0,h],[w,h],[w,0]]
-    corners = [normalize(np.array([(cn[0]-cx)/fx,
-                                   (cn[1]-cy)/fy,
-                                   1])) for cn in corners]
 
-    '''generate new coordinate system'''
-    ax_z = normalize(Trc)                          # vector pointed to camera Cur serve as z axis
-    ax_y = normalize(np.cross(ax_z, corners[0]))   # top-left corner serves as temperary x axis
-    ax_x = normalize(np.cross(ax_y, ax_z))
-    M = np.vstack([ax_x,ax_y,ax_z])
+    def calcTransMat(wGc0, wGc1, K=K, w=w, h=h):
+        fx,fy,cx,cy = K[0,0],K[1,1],K[0,2],K[1,2]
 
-    '''transform the vector to new coordinate and then calculate the vector
-       angle wrt. to x axis'''
-    new_ps = [M.dot(cn) for cn in corners]
-    angles = [np.rad2deg(np.arctan2(p[1], p[0])) for p in new_ps]
+        '''define vectors correspond to 4 image corners '''
+        corners = [[0,0],[0,h],[w,h],[w,0]]
+        corners = [normalize(np.array([(cn[0]-cx)/fx,
+                                       (cn[1]-cy)/fy,
+                                       1])) for cn in corners]
+        rGc = np.dot(np.linalg.inv(wGc0), wGc1)
+        Rrc, Trc = rGc[0:3,0:3], rGc[0:3,3]
 
-    '''re-adjust the x,y axis so that all pixel lies on the same half-plane'''
-    ax_min = np.argmin(angles)
-    ax_y = normalize(np.cross(ax_z, corners[ax_min]))   # top-left corner serves as temperary x axis
-    ax_x = normalize(np.cross(ax_y, ax_z))
-    M = np.vstack([ax_x,ax_y,ax_z])
-    new_ps = [M.dot(cn) for cn in corners]
-    angles = [np.rad2deg(np.arctan2(p[1], p[0])) for p in new_ps]
-    print angles
+        '''generate new coordinate system'''
+        ax_z = normalize(Trc)                          # vector pointed to camera Cur serve as z axis
+        ax_y = normalize(np.cross(ax_z, corners[0]))   # top-left corner serves as temperary x axis
+        ax_x = normalize(np.cross(ax_y, ax_z))
+        M = np.vstack([ax_x,ax_y,ax_z])
 
+        '''transform the vector to new coordinate and then calculate the vector
+           angle wrt. to x axis'''
+        new_ps = [M.dot(cn) for cn in corners]
+        angles = [np.arctan2(p[1], p[0]) for p in new_ps]
+
+        '''re-adjust the x,y axis so that all pixel lies on the same half-plane if possible'''
+        ax_min = np.argmin(angles)
+        ax_y = normalize(np.cross(ax_z, corners[ax_min]))   # top-left corner serves as temperary x axis
+        ax_x = normalize(np.cross(ax_y, ax_z))
+        M = np.vstack([ax_x,ax_y,ax_z])
+
+        return M
+
+    M = calcTransMat(G0, G1)
+
+    ''' draw the ball'''
     if 1:
         phi,theta = np.meshgrid(range(78), range(10,170))
         phi = np.deg2rad(phi.ravel())
@@ -134,8 +158,68 @@ if __name__ == "__main__":
         pxyz = M.T.dot(pxyz)
         vis.AddPointCloudActor(pxyz.T)
 
+    def positive_range(x):
+        return np.where(x>0, x, x+2*np.pi) # x if x>0 else x+2*np.pi
+
+    def calcAngle(M, x, y, rGc=None, K=K):
+        p0 = backproject(x, y, K)
+        if not rGc is None:
+            p0 = rGc[0:3,0:3].dot(p0)
+        p = M.dot(p0)
+        theta = positive_range(np.arctan2(p[1], p[0]))
+        phi = positive_range(np.arctan2(np.sqrt(p[0]**2 + p[1]**2), p[2]))
+        return theta, phi
+
+    def calcRange(phi0, phi1, wGc0=G0, wGc1=G1):
+        rGc = np.dot(np.linalg.inv(wGc0), wGc1)
+        Trc = rGc[0:3,3]
+        Baseline = np.linalg.norm(Trc)
+        c = np.pi-phi1
+        b = phi1-phi0
+        return Baseline*np.sin(c)/np.sin(b)
+
+    def trueProj(xr, yr, cGr=cGr, Zr=Z):
+        pr = backproject(xr, yr)*Zr[yr,xr]
+        pc =  K.dot(cGr[0:3,0:3].dot(pr)+cGr[0:3,3])
+        pc /= pc[2]
+        return pc[0],pc[1]
+
+    def rangetoPhi(ac, r):
+        B = np.linalg.norm(Trc)
+        c = np.pi-ac
+        return ac-np.arcsin(B/r*np.sin(c))
+
+    def test_calcRange():
+        f,a = plt.subplots(1, 1, num='test_depth')
+        a.imshow(sim(Iref, Icur))
+        while 1:
+            plt.pause(0.01)
+            pref = np.round(plt.ginput(1, timeout=-1)[0])
+            a.plot(pref[0], pref[1],'r.')
+
+            pcur = trueProj(pref[0], pref[1])
+            a.plot(pcur[0]+640, pcur[1],'b.')
+
+            a_ref = calcAngle(M, pref[0], pref[1])
+            a_cur = calcAngle(M, pcur[0], pcur[1], rGc)
+            prange = calcRange(a_ref[1], a_cur[1])
+            P = snormalize(backproject(pref[0], pref[1]))*prange
+            print 'Ground truth:%f, estimated:%f' % (P[2], Z[pref[1],pref[0]])
+    test_calcRange()
+
+
 
 #%% generate target point
+    def extractPts(img, threshold):
+        h,w = img.shape
+        dx,dy = np.gradient(img)
+        grad = np.sqrt(dx**2+dy**2)
+
+        u, v = np.meshgrid(range(w),range(h))
+        mask = reduce(np.logical_and,[grad>threshold, u>1, v>1, u<w-2, v<h-2])
+        pyx = np.array(np.where(mask)).T
+        return pyx
+
     def calcGradient(im):
         dx,dy = np.gradient(im)
         return np.sqrt(dx**2+dy**2)
@@ -145,7 +229,6 @@ if __name__ == "__main__":
 
     u, v = np.meshgrid(range(w),range(h))
     ub, vb = (u-cx)/fx, (v-cy)/fy
-
 
     mask_ref = reduce(np.logical_and,[grad>grad_threshold, u>1, v>1, u<w-2, v<h-2])
     puv_ref = np.array(np.where(mask_ref)).T
@@ -206,52 +289,12 @@ if __name__ == "__main__":
 
 #%% exam the depth calculation
 
-    positive_range = lambda x: np.where(x>0, x, x+2*np.pi) #x if x>0 else x+2*np.pi
-    def calcAngle(x, y, G=None):
-        p0 = np.array([(x-cx)/fx, (y-cy)/fy, np.ones(len(x))])
-        if not G is None:
-            p0 = G[0:3,0:3].dot(p0)
-        p = M.dot(p0)
-        theta = positive_range(np.arctan2(p[1], p[0]))
-        phi = positive_range(np.arctan2(np.sqrt(p[0]**2+p[1]**2), p[2]))
-        return theta, phi
-
-    def calcRange(ar, ac):
-        B = np.linalg.norm(Trc)
-        c = np.pi-ac
-        b = ac-ar
-        return B*np.sin(c)/np.sin(b)
-
-    def rangetoAngle(ac, r):
-        B = np.linalg.norm(Trc)
-        c = np.pi-ac
-        return ac-np.arcsin(B/r*np.sin(c))
-
-    def test_calcRange():
-        f,a = plt.subplots(1, 1, num='test_depth')
-        a.imshow(sim(Iref, Icur))
-        while 1:
-            plt.pause(0.01)
-            pref = np.round(plt.ginput(1, timeout=-1)[0])
-            a.plot(pref[0], pref[1],'r.',ms=2)
-            pcur = trueProj(pref[0], pref[1])
-            a.plot(pcur[0]+640, pcur[1],'b.',ms=2)
-            a_ref = calcAngle(pref[0], pref[1])
-            a_cur = calcAngle(pcur[0], pcur[1], rGc)
-            prange = calcRange(a_ref[1], a_cur[1])
-            P = snormalize(np.array([(pref[0]-cx)/fx, (pref[1]-cy)/fy, 1.0]))*prange
-            print 'Ground truth:%f, estimated:%f' % (P[2], Z[pref[1],pref[0]])
-#    test_calcRange()
 
 
 
 #%% demo: points on the scanline
 
-    def trueProj(x, y, G=cGr, Z=Z):
-        p0 = np.array([(x-cx)/fx, (y-cy)/fy, np.ones(len(x))])*Z[y,x]
-        p =  K.dot(G[0:3,0:3].dot(p0)+G[0:3,3][:,np.newaxis])
-        p /= p[2]
-        return p[0],p[1]
+
 
     from sklearn.neighbors import NearestNeighbors
     def trueAssignmentForCur(curx, cury, rx, ry):
