@@ -71,7 +71,7 @@ if __name__ == "__main__":
 
     fx,fy,cx,cy = K[0,0],K[1,1],K[0,2],K[1,2]
 
-    refid, curid = 0,9
+    refid, curid = 0,1
     Iref, G0, Z = frames[refid].astype('f')/255.0, wGc[refid].astype('f'), Zs[refid].astype('f')
     Icur, G1  = frames[curid].astype('f')/255.0, wGc[curid].astype('f')
     Iref3 = np.tile(Iref.ravel(), (3,1))
@@ -183,7 +183,7 @@ if __name__ == "__main__":
 
     def trueProj(xr, yr, cGr=cGr, Zr=Z):
         pr = backproject(xr, yr)*Zr[yr,xr]
-        pc =  K.dot(cGr[0:3,0:3].dot(pr)+cGr[0:3,3])
+        pc =  K.dot(cGr[0:3,0:3].dot(pr)+cGr[0:3,3][:,np.newaxis])
         pc /= pc[2]
         return pc[0],pc[1]
 
@@ -208,7 +208,7 @@ if __name__ == "__main__":
             prange = calcRange(a_ref[1], a_cur[1])
             P = snormalize(backproject(pref[0], pref[1]))*prange
             print 'Ground truth:%f, estimated:%f' % (P[2], Z[pref[1],pref[0]])
-    test_calcRange()
+#    test_calcRange()
 
 
 
@@ -299,7 +299,7 @@ if __name__ == "__main__":
     def trueAssignmentForCur(curx, cury, rx, ry):
         tx, ty = trueProj(rx, ry)
         tp = np.round([tx,ty])
-        tree = NearestNeighbors(n_neighbors=1, algorithm='auto', n_jobs=4).fit(tp.T)
+        tree = NearestNeighbors(n_neighbors=1, algorithm='auto').fit(tp.T)
         dis, ind = tree.kneighbors(np.array([curx, cury]).T)
         ind[dis>0] = -1
         return ind
@@ -372,8 +372,8 @@ if __name__ == "__main__":
 #                d_result[lyc, lxc] = calcRange(np.deg2rad(ang_scaler(ram, isInvert=True)),
 #                                               np.deg2rad(ang_scaler(lac, isInvert=True)))
 
-                ac = calcAngle(lxc,lyc,rGc)[1]
-                ar = calcAngle(rxm,rym)[1]
+                ac = calcAngle(M,lxc,lyc,rGc)[1]
+                ar = calcAngle(M,rxm,rym)[1]
 
                 d_result[lyc, lxc] = calcRange(ar,ac)
 #                ''' added line between matched pairs'''
@@ -440,11 +440,17 @@ if __name__ == "__main__":
     fs[0].extractPts(gthreshold)
 
     ''' set up matching Frame'''
-    seq = [0,9]
+    seq = [0]
     for fid in seq:
         f = Frame(frames[fid], relPos(G0, wGc[fid]), Z=Zs[fid])
+        '''extract sailent points'''
         f.extractPts(gthreshold)
+        ''' calculate epipolar info'''
+        M = calcTransMat(G0, wGc[fid])
+        f.calcPtsAngle(M)
+        fs[0].calcPtsAngle(M)
         fs.append(f)
+
 
     '''debug plot'''
     if 1:
@@ -467,10 +473,12 @@ if __name__ == "__main__":
             sp.plot(pref[0], pref[1], 'r.', ms=2)
         fig.tight_layout()
 
+
 #%% icp
     from matplotlib.patches import ConnectionPatch
     from scipy.optimize import linear_sum_assignment
     debug = True
+    from sklearn.neighbors import NearestNeighbors
 
     if debug:
         f = plt.figure(num='icp')
@@ -482,8 +490,8 @@ if __name__ == "__main__":
         plt.tight_layout()
 
     lim, rim = Icur, Iref #calcGradient(Icur), calcGradient(Iref)
-
-    for a in [180]:#range(ang_scaler.levels+1):
+    patt = lambda x,y : [(y,x),(y-2,x),(y-1,x+1),(y,x+2),(y+1,x+1),(y+2,x),(y+1,x-1),(y,x-2),(y-1,x-1)]
+    for a in range(ang_scaler.levels+1):#[180]:
         pr,pc = data[a],data_cur[a]
 
         if pc and pr:
@@ -496,24 +504,102 @@ if __name__ == "__main__":
             tx, ty = trueProj(rx, ry)
             cury, curx = map(np.array, zip(*pc[2]))
 
+            vl = np.vstack([lim[ind] for ind in patt(curx,cury)]).T
+            vr = np.vstack([rim[ind] for ind in patt(rx,ry)]).T
+
             ca,ra = np.array(pc[0]), np.array(pr[0])
             cb,rb = np.array(pc[1]), np.array(pr[1])
 
-            idInRef = trueAssignmentForCur(curx, cury, rx, ry).ravel()
+            match_id = np.empty_like(ca,'i')
 
-            cyc,cxc,cac,match_idx = ( np.compress(idInRef!=-1, dump) for dump in [cury,curx,ca,idInRef] )
-            rxc,ryc,rac = ( np.take(dump, match_idx) for dump in [rx,ry,ra] )
+            nbrR = NearestNeighbors(n_neighbors=4, algorithm='auto').fit(vec(ra))
 
-            vl, vr = lim[cury, curx], rim[ry,rx]
+            def drawCorrespondent(match_id, hold=False):
+                if not hold:
+                    ab.clear()
+                ab.plot(ca,cb,'ro')
+                ab.plot(ra,rb,'bs')
+                vm = match_id!=-1
+                match_id = match_id.compress(vm)
+                ab.plot([ca[vm],ra[match_id]],
+                        [cb[vm],rb[match_id]],'g-')
+                plt.pause(0.01)
 
-            al.clear(); ar.clear();
-            al.imshow(Icur, interpolation='none'); al.plot(curx,cury,'b.');al.plot(tx,ty,'g.')
-            ar.imshow(Iref, interpolation='none'); ar.plot(rx,ry,'r.')
+            def drawCorrespondentOnImg(match_id, hold=False):
+                if not hold:
+                    al.clear(); ar.clear();
+                al.imshow(Icur, interpolation='none'); al.plot(curx,cury,'r.');al.plot(tx,ty,'g.')
+                ar.imshow(Iref, interpolation='none'); ar.plot(rx,ry,'b.')
 
-            ab.plot(ca,cb,'ro')
-            ab.plot(ra,rb,'bs')
+                vm = match_id!=-1
+                match_id = match_id.compress(vm)
+                al.plot([curx[vm],tx[match_id]],
+                        [cury[vm],ty[match_id]],'b-')
+                plt.pause(0.01)
 
-            ab.plot([cac,rac],[cb[idInRef!=-1],rb[match_idx]],'g-')
+            def evalMatch(match_id):
+                vm = match_id!=-1
+                match_id = match_id.compress(vm)
+                return np.abs(vr[match_id] - vl[vm]).sum() + (match_id==-1).sum()*0.2*9
+
+            def trueAssignmentForCur():
+                tp = np.round([tx,ty])
+                tree = NearestNeighbors(n_neighbors=1, algorithm='auto').fit(tp.T)
+                dis, ind = tree.kneighbors(np.array([curx, cury]).T)
+                ind[dis>0] = -1
+                return ind.ravel()
+
+            '''1. random init'''
+            for i,a in enumerate(vec(ca)):
+                valid_choice, = np.where(ra<a)
+                match_id[i] = np.random.choice(valid_choice, 1)
+
+            drawCorrespondent(match_id)
+            drawCorrespondentOnImg(match_id)
+            plt.waitforbuttonpress()
+
+            '''2. iterate'''
+            for it in range(4):
+                print it
+                ''' odd: forward=-1 even: backward=1 '''
+                if np.mod(it,2):
+                    direction = -1
+                    seq = range(1,len(ca))
+                else:
+                    direction = 1
+                    seq = reversed(range(len(ca)-1))
+
+                for i in seq:
+                    last_id = i + direction
+                    sample_list = [match_id[i]]
+                    ''' receive solution from precedent (propagation), 2 situations:'''
+                    ''' a. Not occluded, valid matching'''
+                    if match_id[last_id] != -1:
+                        ''' calculate the expected angle and find the points near to it '''
+                        dis = ca[last_id] - ra[match_id[last_id]]
+                        expect = ca[i] - dis
+                        sample_ind = nbrR.kneighbors(expect, return_distance=False)
+                    else:
+                        ''' b. precedent is occluded (= no prior info), do global random sampling '''
+                        valid_choice, = np.where(ra<ca[i])
+                        sample_ind = np.random.choice(valid_choice, 4)
+
+                    ''' evaluate all the sample'''
+                    sample_list += sample_ind.ravel().tolist()
+                    sample_cost = [np.abs(vr[spts] - vl[i]).sum() for spts in sample_list]
+
+                    ''' save the best, if the cost still too high consider it occluded '''
+                    best_sample = np.argmin(sample_cost)
+                    match_id[i] = sample_list[best_sample] if sample_cost[best_sample]<0.2*9 else -1
+
+                '''debug display'''
+                drawCorrespondent(match_id)
+                drawCorrespondentOnImg(match_id)
+                plt.waitforbuttonpress()
+
+#            idInRef = trueAssignmentForCur(curx, cury, rx, ry).ravel()
+#            cyc,cxc,cac,match_idx = ( np.compress(idInRef!=-1, dump) for dump in [cury,curx,ca,idInRef] )
+#            rxc,ryc,rac = ( np.take(dump, match_idx) for dump in [rx,ry,ra] )
 
             plt.pause(0.01)
             plt.waitforbuttonpress()
