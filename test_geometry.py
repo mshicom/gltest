@@ -346,7 +346,7 @@ if __name__ == "__main__":
             plt.pause(0.01)
             plt.waitforbuttonpress()
 
-    if 1:
+    if 0:
         from matplotlib.patches import ConnectionPatch
         d_result = np.full_like(Icur, np.nan,'f')
         for ang in range(ang_scaler.levels+1):
@@ -473,11 +473,21 @@ if __name__ == "__main__":
         fig.tight_layout()
 
 
-#%% icp
+#%% pmbp
     from matplotlib.patches import ConnectionPatch
     from scipy.optimize import linear_sum_assignment
-    debug = False
+    debug =  True #False#
     from sklearn.neighbors import NearestNeighbors
+
+    class memo:
+        def __init__(self, fn):
+            self.fn = fn
+            self.memo = {}
+        def __call__(self, *args):
+            keystr = tuple(args)
+            if keystr not in self.memo:
+                self.memo[keystr] = self.fn(*args)
+            return self.memo[keystr]
 
     if debug:
         f = plt.figure(num='icp')
@@ -491,7 +501,7 @@ if __name__ == "__main__":
 
     lim, rim = Icur, Iref #calcGradient(Icur), calcGradient(Iref)
     patt = lambda x,y : [(y,x),(y-2,x),(y-1,x+1),(y,x+2),(y+1,x+1),(y+2,x),(y+1,x-1),(y,x-2),(y-1,x-1)]
-    for a in range(ang_scaler.levels+1):#[180]:
+    for a in [180]: #range(ang_scaler.levels+1):#
         pr,pc = data[a],data_cur[a]
 
         if pc and pr:
@@ -514,7 +524,12 @@ if __name__ == "__main__":
             idInRef = np.empty_like(ca,'i')
 
             nbrR = NearestNeighbors(n_neighbors=4, algorithm='auto').fit(vec(ra))
-            occ_cost = 0.04*9
+            occ_cost = 0.04*9+0.2
+
+            @memo
+            def calcMatchCost(i,j):
+                return np.abs(vl[i] - vr[j]).sum()+np.abs(cb[i] - rb[j])
+
             if debug:
                 def drawCorrespondent(idInRef, hold=False):
                     if not hold:
@@ -562,8 +577,8 @@ if __name__ == "__main__":
                 plt.waitforbuttonpress()
 
             '''2. iterate'''
-            for it in range(4):
-#                print it
+            for it in range(6):
+                print it
                 ''' odd: forward=-1 even: backward=1 '''
                 if np.mod(it,2):
                     direction = -1
@@ -589,7 +604,7 @@ if __name__ == "__main__":
 
                     ''' evaluate all the sample'''
                     sample_list += sample_ind.ravel().tolist()
-                    sample_cost = [np.abs(vr[spts] - vl[i]).sum() for spts in sample_list]
+                    sample_cost = [calcMatchCost(i,spts) for spts in sample_list] #
 
                     ''' save the best, if the cost still too high consider it occluded '''
                     best_sample = np.argmin(sample_cost)
@@ -604,13 +619,13 @@ if __name__ == "__main__":
 
             cyc,cxc,cac,match_idx = ( np.compress(idInRef!=-1, dump) for dump in [cury,curx,ca,idInRef] )
             rxc,ryc,rac = ( dump[match_idx] for dump in [rx,ry,ra] )
-            ac = calcAngle(M,cxc,cyc,rGc)[1]
-            ar = calcAngle(M,rxc,ryc)[1]
-            d_result[cyc, cxc] = calcRange(ar,ac)
+            angc = calcAngle(M,cxc,cyc,rGc)[1]
+            angr = calcAngle(M,rxc,ryc)[1]
+            d_result[cyc, cxc] = calcRange(angr,angc)
 
 #        plt.pause(0.01)
 #        plt.waitforbuttonpress()
-    v,u = np.where(~np.isnan(d_result))
+    v,u = np.where(np.logical_and(~np.isnan(d_result),d_result<10))
     p3d = snormalize(np.array([(u-cx)/fx, (v-cy)/fy, np.ones(len(u))]))*d_result[v,u]
     plotxyzrgb(np.vstack([p3d,np.tile(Icur[v,u]*255,(3,1))]).T)
 
