@@ -476,8 +476,9 @@ if __name__ == "__main__":
 #%% pmbp
     from matplotlib.patches import ConnectionPatch
     from scipy.optimize import linear_sum_assignment
-    debug =  True #False#
+    debug = True #False#
     from sklearn.neighbors import NearestNeighbors
+    from scipy import sparse
 
     class memo:
         def __init__(self, fn):
@@ -497,11 +498,35 @@ if __name__ == "__main__":
         ab = f.add_subplot(gs[1,:])
         ab.autoscale()
         plt.tight_layout()
-    d_result = np.full_like(Icur, np.nan,'f')
+    d_result = np.full_like(Icur, np.inf,'f')
+
+    def makeEdges(px, py):
+        node_cnt = px.size
+        edges_forward = [[] for _ in range(node_cnt)]
+        edges_backward = [[] for _ in range(node_cnt)]
+        mask_image = np.full((h,w), False)
+        mask_image[py,px] = True
+        id_LUT = np.empty_like(mask_image, 'i4')
+        id_LUT[py,px] = range(node_cnt)      # lookup-table of index number for valid pixels
+        for p_id, p_x,p_y in zip(range(node_cnt), px, py):
+            fcoord = [(p_y-1,p_x),(p_y,p_x-1),(p_y-1,p_x-1),(p_y-1,p_x+1)]
+            fnbrs = [id_LUT[coord] for coord in fcoord if mask_image[coord]]
+            if p_id-1 not in fnbrs:
+                fnbrs.append(p_id-1)
+            edges_forward[p_id].extend(fnbrs)
+
+
+            bcoord = [(p_y+1,p_x),(p_y,p_x+1),(p_y+1,p_x+1),(p_y+1,p_x-1)]
+            bnbrs = [id_LUT[coord] for coord in bcoord if mask_image[coord]]
+            if p_id+1 not in bnbrs:
+                fnbrs.append(p_id+1)
+            edges_backward[p_id].extend(bnbrs)
+
+        return edges_forward, edges_backward
 
     lim, rim = Icur, Iref #calcGradient(Icur), calcGradient(Iref)
     patt = lambda x,y : [(y,x),(y-2,x),(y-1,x+1),(y,x+2),(y+1,x+1),(y+2,x),(y+1,x-1),(y,x-2),(y-1,x-1)]
-    for a in [180]: #range(ang_scaler.levels+1):#
+    for a in range(ang_scaler.levels+1):#[180]: #
         pr,pc = data[a],data_cur[a]
 
         if pc and pr:
@@ -514,6 +539,8 @@ if __name__ == "__main__":
             ry, rx = map(np.array,zip(*pr[2]))
             tx, ty = trueProj(rx, ry)
             cury, curx = map(np.array, zip(*pc[2]))
+
+            fnbrs,bnbrs = makeEdges(curx, cury)
 
             vl = np.vstack([lim[ind] for ind in patt(curx,cury)]).T
             vr = np.vstack([rim[ind] for ind in patt(rx,ry)]).T
@@ -578,37 +605,50 @@ if __name__ == "__main__":
 
             '''2. iterate'''
             for it in range(6):
-                print it
+#                print it
                 ''' odd: forward=-1 even: backward=1 '''
                 if np.mod(it,2):
                     direction = -1
                     seq = range(1,len(ca))
+                    nbrs = fnbrs
                 else:
                     direction = 1
                     seq = reversed(range(len(ca)-1))
+                    nbrs = bnbrs
 
                 for i in seq:
-                    last_id = i + direction
                     sample_list = [idInRef[i]]
-                    ''' receive solution from precedent (propagation), 2 situations:'''
-                    ''' a. Not occluded, valid matching'''
-                    if idInRef[last_id] != -1:
-                        ''' calculate the expected angle and find the points near to it '''
-                        dis = ca[last_id] - ra[idInRef[last_id]]
-                        expect = ca[i] - dis
-                        sample_ind = nbrR.kneighbors(expect, return_distance=False)
-                    else:
-                        ''' b. precedent is occluded (= no prior info), do global random sampling '''
+                    nbr_dis = []
+                    ''' receive solution from neighbors (propagation):'''
+                    for nbr_id in nbrs[i]:
+
+                        ''' If The value of neighbors is valid i.e. not occluded'''
+                        if idInRef[nbr_id] != -1:
+                            ''' calculate the expected angle and find the points near to it '''
+                            dis = ca[nbr_id] - ra[idInRef[nbr_id]]
+                            expect = ca[i] - dis
+                            sample_ind = nbrR.kneighbors(expect, return_distance=False)
+                            sample_list += sample_ind.ravel().tolist()
+                            nbr_dis.append(dis)
+
+                    ''' In case there are not neighbors or all of them are occluded, do a global random sampling '''
+                    if len(sample_list)<2:
                         valid_choice, = np.where(ra<ca[i])
-                        sample_ind = np.random.choice(valid_choice, 4) if len(valid_choice)>0 else np.array([])
+                        sample_ind = np.random.choice(valid_choice, 8) if len(valid_choice)>0 else np.array([])
+                        sample_list += sample_ind.ravel().tolist()
 
                     ''' evaluate all the sample'''
-                    sample_list += sample_ind.ravel().tolist()
-                    sample_cost = [calcMatchCost(i,spts) for spts in sample_list] #
+                    def paircost(i, spts):
+                        dis = ca[i] - ra[spts]
+                        return np.minimum(np.abs(np.array(nbr_dis)-dis), 0.5).sum()
+
+                    sample_list = list(set(sample_list))  # tricks to remove duplicates
+                    sample_cost = [calcMatchCost(i,spts)+0.5*paircost(i,spts) for spts in sample_list] #
+
 
                     ''' save the best, if the cost still too high consider it occluded '''
                     best_sample = np.argmin(sample_cost)
-                    idInRef[i] = sample_list[best_sample] if sample_cost[best_sample]<occ_cost else -1
+                    idInRef[i] = sample_list[best_sample] #if sample_cost[best_sample]<occ_cost else -1
 
 #                    print evalMatch(idInRef)
                 '''debug display'''
@@ -625,7 +665,7 @@ if __name__ == "__main__":
 
 #        plt.pause(0.01)
 #        plt.waitforbuttonpress()
-    v,u = np.where(np.logical_and(~np.isnan(d_result),d_result<10))
+    v,u = np.where(np.logical_and(0<d_result,d_result<1000))
     p3d = snormalize(np.array([(u-cx)/fx, (v-cy)/fy, np.ones(len(u))]))*d_result[v,u]
     plotxyzrgb(np.vstack([p3d,np.tile(Icur[v,u]*255,(3,1))]).T)
 
