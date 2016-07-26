@@ -126,7 +126,7 @@ if __name__ == "__main__":
                                        (cn[1]-cy)/fy,
                                        1])) for cn in corners]
         rGc = np.dot(np.linalg.inv(wGc0), wGc1)
-        Rrc, Trc = rGc[0:3,0:3], rGc[0:3,3]
+        Trc = rGc[0:3,3]
 
         '''generate new coordinate system'''
         ax_z = normalize(Trc)                          # vector pointed to camera Cur serve as z axis
@@ -150,7 +150,7 @@ if __name__ == "__main__":
     M = calcTransMat(G0, G1)
 
     ''' draw the ball'''
-    if 1:
+    if 0:
         phi,theta = np.meshgrid(range(78), range(10,170))
         phi = np.deg2rad(phi.ravel())
         theta = np.deg2rad(theta.ravel())
@@ -182,7 +182,10 @@ if __name__ == "__main__":
 
     def trueProj(xr, yr, cGr=cGr, Zr=Z):
         pr = backproject(xr, yr)*Zr[yr,xr]
-        pc =  K.dot(cGr[0:3,0:3].dot(pr)+cGr[0:3,3][:,np.newaxis])
+        if isScalar(xr):
+            pc =  K.dot(cGr[0:3,0:3].dot(pr)+cGr[0:3,3])
+        else:
+            pc =  K.dot(cGr[0:3,0:3].dot(pr)+cGr[0:3,3][:,np.newaxis])
         pc /= pc[2]
         return pc[0],pc[1]
 
@@ -206,7 +209,7 @@ if __name__ == "__main__":
             a_cur = calcAngle(M, pcur[0], pcur[1], rGc)
             prange = calcRange(a_ref[1], a_cur[1])
             P = snormalize(backproject(pref[0], pref[1]))*prange
-            print 'Ground truth:%f, estimated:%f' % (P[2], Z[pref[1],pref[0]])
+            print 'Ground truth:%f, estimated:%f' % (Z[pref[1],pref[0]], P[2])
 #    test_calcRange()
 
 
@@ -346,7 +349,7 @@ if __name__ == "__main__":
             plt.pause(0.01)
             plt.waitforbuttonpress()
 
-    if 0:
+    if 1:
         from matplotlib.patches import ConnectionPatch
         d_result = np.full_like(Icur, np.nan,'f')
         for ang in range(ang_scaler.levels+1):
@@ -476,7 +479,7 @@ if __name__ == "__main__":
 #%% pmbp
     from matplotlib.patches import ConnectionPatch
     from scipy.optimize import linear_sum_assignment
-    debug = True #False#
+    debug = False#True #
     from sklearn.neighbors import NearestNeighbors
     from scipy import sparse
 
@@ -645,7 +648,6 @@ if __name__ == "__main__":
                     sample_list = list(set(sample_list))  # tricks to remove duplicates
                     sample_cost = [calcMatchCost(i,spts)+0.5*paircost(i,spts) for spts in sample_list] #
 
-
                     ''' save the best, if the cost still too high consider it occluded '''
                     best_sample = np.argmin(sample_cost)
                     idInRef[i] = sample_list[best_sample] #if sample_cost[best_sample]<occ_cost else -1
@@ -665,7 +667,7 @@ if __name__ == "__main__":
 
 #        plt.pause(0.01)
 #        plt.waitforbuttonpress()
-    v,u = np.where(np.logical_and(0<d_result,d_result<1000))
+    v,u = np.where(np.logical_and(0<d_result,d_result<10))
     p3d = snormalize(np.array([(u-cx)/fx, (v-cy)/fy, np.ones(len(u))]))*d_result[v,u]
     plotxyzrgb(np.vstack([p3d,np.tile(Icur[v,u]*255,(3,1))]).T)
 
