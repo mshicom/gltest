@@ -88,33 +88,6 @@ if __name__ == "__main__":
         else:
             x,y = x.ravel(), y.ravel()
             return np.array([(x-cx)/fx, (y-cy)/fy, np.ones(len(x))])
-
-#%%
-    u,v = np.meshgrid(range(w), range(h))
-    pref = backproject(u,v).astype('f')
-    pt = pref*Z.ravel()
-    p0 = np.vstack([pt,Iref3])
-
-    pref /= np.linalg.norm(pref, axis=0)*6
-    p1 = np.vstack([pref,Iref3])
-
-#    plotxyz(np.vstack([pref,Iref3]).T)
-
-    pcur = rGc.dot(homogeneous(pref))[:3]
-    p2 = np.vstack([pcur,Icur3])
-#    plotxyz(np.vstack([pcur, Icur3]).T, hold=True)
-
-    vis = get_vtk_control()
-    vis.RemoveAllActors()
-    vis.AddPointCloudActor(np.hstack([p0,p1,p2]).T)
-    vis.AddLine([0,0,0], Trc)
-
-    p = (182,286)#(202,299)
-    ps = np.array([(p[0]-cx)/fx,(p[1]-cy)/fy,1])*Z[p[1],p[0]]
-    vis.AddLine([0,0,0], ps)
-    vis.AddLine(Trc, ps)
-
-
 #%% calculate the
 
     def calcTransMat(wGc0, wGc1, K=K, w=w, h=h):
@@ -211,6 +184,304 @@ if __name__ == "__main__":
             P = snormalize(backproject(pref[0], pref[1]))*prange
             print 'Ground truth:%f, estimated:%f' % (Z[pref[1],pref[0]], P[2])
 #    test_calcRange()
+
+#%%
+    from sklearn.neighbors import NearestNeighbors
+
+    class memo:
+        def __init__(self, fn):
+            self.fn = fn
+            self.memo = {}
+        def __call__(self, *args):
+            keystr = tuple(args)
+            if keystr not in self.memo:
+                self.memo[keystr] = self.fn(*args)
+            return self.memo[keystr]
+
+    def calcGradient(im):
+        dx,dy = np.gradient(im.astype('f'))
+        return np.sqrt(dx**2+dy**2)
+
+    class Frame(object):
+        __slots__ = ['im','px','py','p_cnt','nbrs','P','v','Z','theta','phi','wGc']
+        def __init__(self, img, wGc=np.eye(4), Z=None, gthreshold=None):
+            self.im = img.copy()
+            self.wGc = wGc.copy()
+            if not Z is None:
+                self.Z = Z.copy()
+
+            '''extract sailent points'''
+            if not gthreshold is None:
+                self.extractPts(gthreshold)
+
+
+        def extractPts(self, gthreshold):
+            ''' 1.extract pixels with significant gradients'''
+            h,w = self.im.shape
+            dx,dy = np.gradient(self.im.astype('f'))
+            grad = np.sqrt(dx**2+dy**2)
+            u, v = np.meshgrid(range(w),range(h))
+            mask = reduce(np.logical_and, [grad>gthreshold, u>1, v>1, u<w-2, v<h-2]) # exclude border pixels
+            y,x = np.where(mask)
+            self.py, self.px = y,x
+            self.p_cnt = len(x)
+
+            ''' 2. corresponding back-projected 3D point'''
+            self.P = np.vstack([(x-cx)/fx,
+                                (y-cy)/fy,
+                                np.ones(self.p_cnt)])
+            ''' 3. patch pixels'''
+            patt = [(y,x),(y-2,x),(y-1,x+1),(y,x+2),(y+1,x+1),(y+2,x),(y+1,x-1),(y,x-2),(y-1,x-1)]
+            self.v = np.vstack([self.im[ind] for ind in patt]).T
+            ''' 4. Neighbors Info'''
+            self.nbrs = self.setNeighborsInfo(mask)
+
+
+        def setNeighborsInfo(self, mask_image):
+            px, py = self.px, self.py
+            node_cnt = self.p_cnt
+
+            edges_forward = [[] for _ in range(node_cnt)]
+            edges_backward = [[] for _ in range(node_cnt)]
+
+            id_LUT = np.empty_like(mask_image, 'i4')
+            id_LUT[py,px] = range(node_cnt)      # lookup-table of index number for valid pixels
+            for p_id, (p_x,p_y) in enumerate(zip(px, py)):
+                fcoord = [(p_y-1,p_x),(p_y,p_x-1),(p_y-1,p_x-1),(p_y-1,p_x+1)]
+                fnbrs = [id_LUT[coord] for coord in fcoord if mask_image[coord]]
+                if p_id-1 not in fnbrs:
+                    fnbrs.append(p_id-1)
+                edges_forward[p_id].extend(fnbrs)
+
+                bcoord = [(p_y+1,p_x),(p_y,p_x+1),(p_y+1,p_x+1),(p_y+1,p_x-1)]
+                bnbrs = [id_LUT[coord] for coord in bcoord if mask_image[coord]]
+                if p_id+1 not in bnbrs:
+                    fnbrs.append(p_id+1)
+                edges_backward[p_id].extend(bnbrs)
+            return edges_forward, edges_backward
+
+
+        def calcPtsAngle(self, M):
+            p0 = self.wGc[0:3,0:3].dot(self.P)
+            p = M.dot(p0)
+            theta = positive_range(np.arctan2(p[1], p[0]))
+            phi = positive_range(np.arctan2(np.sqrt(p[0]**2 + p[1]**2), p[2]))
+            return theta, phi
+
+        def ProjTo(self, f):
+            assert(self.Z is not None)
+            assert(isinstance(f, Frame))
+            G = np.dot(np.linalg.inv(f.wGc), self.wGc)
+            P0 = self.P*self.Z[self.py, self.px]
+            P1 = K.dot(G[0:3,0:3].dot(P0)+G[0:3,3][:,np.newaxis])
+            return P1[:2]/P1[2]
+
+    ''' set up the reference Frame'''
+    refid = 4
+    G0 = wGc[refid]
+    grad = calcGradient(frames[refid])
+    gthreshold = np.percentile(grad, 80)
+
+    ''' set up matching Frame'''
+    fs = []
+    seq = [refid, 0]
+    for fid in seq:
+        f = Frame(frames[fid], relPos(wGc[refid],wGc[fid]), Z=Zs[fid], gthreshold=gthreshold)
+        fs.append(f)
+
+    ''' debug plot '''
+    if 0:
+        fig = plt.figure(num='all image'); fig.clear()
+        gs = plt.GridSpec(len(seq)-1,2)
+        a =  fig.add_subplot(gs[:,0])
+        b = [fig.add_subplot(gs[sp,1]) for sp in range(len(seq)-1)]
+
+        ''' base image'''
+        fref = fs[0]
+        a.imshow(fref.im, interpolation='none')
+        a.plot(fref.px, fref.py, 'r.' )
+
+        ''' matching images'''
+        for i,sp in enumerate(b):
+            fcur = fs[i+1]
+            sp.imshow(fcur.im, interpolation='none')
+            sp.plot(fcur.px, fcur.py, 'b.', ms=2)
+            pref = fref.ProjTo(fcur)
+            sp.plot(pref[0], pref[1], 'r.', ms=2)
+        fig.tight_layout()
+
+    ''' 1. calculate epipolar info'''
+    f0,f1 = fs[0],fs[1]
+    M = calcTransMat(f0.wGc, f1.wGc)
+    theta0, phi0 = f0.calcPtsAngle(M)
+    theta1, phi1 = f1.calcPtsAngle(M)
+
+    ''' 2. set up the bins to lookup points whose angles lie in specific range'''
+    bin_min = np.minimum(theta0.min(), theta1.min())
+    bin_max = np.maximum(theta0.max(), theta1.max())
+    bin_values = np.linspace(bin_min,bin_max,360)
+
+    bin_inds0 = np.digitize(theta0, bin_values)
+    bin_inds1 = np.digitize(theta1, bin_values)
+    bin0 = [[] for _ in xrange(360)]
+    for pid, bid in enumerate(bin_inds0.tolist()):
+        bin0[bid-1].append(pid)
+
+    bin1 = [[] for _ in xrange(360)]
+    for pid, bid in enumerate(bin_inds1.tolist()):
+        bin1[bid-1].append(pid)
+
+    debug = 1#0#
+    plt.close('all')
+    ''' 3. sequential processing'''
+    if debug:
+        f = plt.figure(num='pmbp')
+        gs = plt.GridSpec(2,2)
+        al,ar = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
+        ab = f.add_subplot(gs[1,:])
+        plt.tight_layout()
+        p1t0 = f1.ProjTo(f0)
+
+    d_result = np.full_like(f0.im, np.inf,'f')
+    pidIn1 = np.full(f0.p_cnt,-1,'i')
+
+    pts0,pts1 = bin0[5],bin1[5]         # just for debug
+    n = 0
+    for pts0,pts1 in zip(bin0,bin1):
+        ''' skip if empty'''
+        if not (pts0 and pts1):
+            continue
+        print n; n+=1
+        ''' remove point that can only have negative disparity '''
+        pts0,pts1 = np.array(pts0), np.array(pts1)
+        pts0 = pts0.compress(phi0[pts0]<phi1[pts1].max())
+        pts1 = pts1.compress(phi1[pts1]>phi0[pts0].min())
+
+        ''' buffer local data'''
+        x0,y0,a0,b0,v0 = (foo[pts0] for foo in [f0.px, f0.py, phi0, theta0, f0.v])
+        x1,y1,a1,b1,v1 = (foo[pts1] for foo in [f1.px, f1.py, phi1, theta1, f1.v])
+
+        if debug:
+            def drawCorrespondent(pidIn1, hold=False):
+                if not hold:
+                    ab.clear()
+                ab.plot(a0,b0,'rs')
+                ab.plot(a1,b1,'bo')
+
+                line_match = pidIn1.take(pts0)
+                vm = line_match!=-1
+                line_match = line_match.compress(vm)
+                ab.plot([a0[vm],phi1[line_match]],
+                        [b0[vm],theta1[line_match]],'g-')
+                plt.pause(0.01)
+
+            def drawCorrespondentOnImg(pidIn1, hold=False):
+                if not hold:
+                    al.clear(); ar.clear();
+                al.imshow(f0.im, interpolation='none'); al.plot(x0,y0,'r.')
+                ar.imshow(f1.im, interpolation='none'); ar.plot(x1,y1,'b.')
+                al.plot(p1t0[0,pts1], p1t0[1,pts1],'b.')
+
+                line_match = pidIn1.take(pts0)
+                vm = line_match!=-1
+                line_match = line_match.compress(vm)
+                al.plot([x0[vm],p1t0[0,line_match]],
+                        [y0[vm],p1t0[1,line_match]],'g-')
+                plt.pause(0.01)
+
+        ''' 1. random init'''
+        for p in pts0:
+            ind, = np.where(a1 > phi0[p])
+            pidIn1[p] = np.random.choice(pts1[ind], 1)
+
+        ''' 2. iterate'''
+        KNN = NearestNeighbors(n_neighbors=np.minimum(4, len(pts1)),
+                               algorithm='auto').fit(vec(a1)).kneighbors
+        for it in range(6):
+            '''debug display'''
+            if debug:
+                drawCorrespondent(pidIn1)
+                drawCorrespondentOnImg(pidIn1)
+                plt.waitforbuttonpress()
+
+            ''' odd: forward=-1 even: backward=1 '''
+            if np.mod(it,2):
+                p_seq = pts0[1:]
+                nbrs = f0.nbrs[0]
+            else:
+                p_seq = reversed(pts0[:-1])
+                nbrs = f0.nbrs[1]
+
+            for p in p_seq:  # global idp = pts1[i]
+                sample_list = [pidIn1[p]]
+                nbr_dis = []
+                ''' receive solution from neighbors (propagation):'''
+                for p_nbr in nbrs[p]:
+                    ''' If The value of neighbors is valid i.e. not occluded'''
+                    if pidIn1[p_nbr] != -1:
+                        ''' calculate the expected angle and find the points near to it '''
+                        dis =  phi1[pidIn1[p_nbr]] - phi0[p_nbr]
+                        expect = phi0[p] + dis
+                        sample_ind = KNN(expect, return_distance=False) # TODO: limit the disparity range
+                        sample_list += pts1[sample_ind].ravel().tolist()
+                        nbr_dis.append(dis)
+
+                ''' In case there are no neighbors or all of them are occluded, do a global random sampling '''
+                if len(sample_list)<2:
+                    ind, = np.where(a1 > phi0[p])
+                    sample_ind = np.random.choice(ind, 4) if len(ind)>0 else np.array([])
+                    sample_list += pts1[sample_ind].ravel().tolist()
+
+                ''' evaluate all the sample''' # TODO: normalize
+                def paircost(p, q):
+                    dis = phi1[q] - phi0[p]
+                    return np.minimum(np.abs(np.array(nbr_dis)-dis), 0.5).sum() if dis>0 else 1e6
+
+                @memo
+                def calcMatchCost(p,q):
+                    return np.abs(f0.v[p]-f1.v[q]).sum()/255.0 + 100*6.283*np.abs(theta0[p]-theta1[q])
+
+                sample_list = list(set(sample_list))  # tricks to remove duplicates
+                sample_cost = [calcMatchCost(p,q)+10*paircost(p,q) for q in sample_list] #
+
+                ''' save the best, if the cost still too high consider it occluded '''
+                best_sample = np.argmin(sample_cost)
+                pidIn1[p] = sample_list[best_sample] #if sample_cost[best_sample]<occ_cost else -1
+
+
+
+    ''' 4. calc & plot depth'''
+    vm = pidIn1!=-1
+    x0,y0,a0,b0,m = (np.compress(vm, dump) for dump in [f0.px, f0.py, phi0, theta0, pidIn1])
+    d_result[y0, x0] = calcRange(a0, phi1[m])
+
+    v,u = np.where(np.logical_and(0<d_result,d_result<10))
+    p3d = snormalize(np.array([(u-cx)/fx, (v-cy)/fy, np.ones(len(u))]))*d_result[v,u]
+    plotxyzrgb(np.vstack([p3d,np.tile(Icur[v,u]*255,(3,1))]).T)
+#%%
+    u,v = np.meshgrid(range(w), range(h))
+    pref = backproject(u,v).astype('f')
+    pt = pref*Z.ravel()
+    p0 = np.vstack([pt,Iref3])
+
+    pref /= np.linalg.norm(pref, axis=0)*6
+    p1 = np.vstack([pref,Iref3])
+
+#    plotxyz(np.vstack([pref,Iref3]).T)
+
+    pcur = rGc.dot(homogeneous(pref))[:3]
+    p2 = np.vstack([pcur,Icur3])
+#    plotxyz(np.vstack([pcur, Icur3]).T, hold=True)
+
+    vis = get_vtk_control()
+    vis.RemoveAllActors()
+    vis.AddPointCloudActor(np.hstack([p0,p1,p2]).T)
+    vis.AddLine([0,0,0], Trc)
+
+    p = (182,286)#(202,299)
+    ps = np.array([(p[0]-cx)/fx,(p[1]-cy)/fy,1])*Z[p[1],p[0]]
+    vis.AddLine([0,0,0], ps)
+    vis.AddLine(Trc, ps)
 
 
 
@@ -392,88 +663,6 @@ if __name__ == "__main__":
         p3d = snormalize(np.array([(u-cx)/fx, (v-cy)/fy, np.ones(len(u))]))*d_result[v,u]
         plotxyzrgb(np.vstack([p3d,np.tile(Icur[v,u]*255,(3,1))]).T)
 
-#%%
-
-    class Frame(object):
-        __slots__ = ['im', 'px', 'py', 'p_cnt','P','v','Z','theta', 'phi', 'wGc']
-        def __init__(self, img, wGc=np.eye(4), Z=None):
-            self.im = img.copy()
-            self.wGc = wGc.copy()
-            if not Z is None:
-                self.Z = Z.copy()
-
-        def extractPts(self, gthreshold):
-            h,w = self.im.shape
-
-            '''extract gradient pixel'''
-            dx,dy = np.gradient(self.im.astype('f'))
-            grad = np.sqrt(dx**2+dy**2)
-            u, v = np.meshgrid(range(w),range(h))
-            mask = reduce(np.logical_and, [grad>gthreshold, u>1, v>1, u<w-2, v<h-2])
-            y,x = np.where(mask)
-            self.py, self.px = y,x
-            self.p_cnt = len(x)
-            self.P = np.vstack([(x-cx)/fx,
-                                (y-cy)/fy,
-                                np.ones(self.p_cnt)])
-            patt = [(y,x),(y-2,x),(y-1,x+1),(y,x+2),(y+1,x+1),(y+2,x),(y+1,x-1),(y,x-2),(y-1,x-1)]
-            self.v = np.vstack([self.im[ind] for ind in patt]).T
-
-        def calcPtsAngle(self, M):
-            p0 = self.wGc[0:3,0:3].dot(self.P)
-            p = M.dot(p0)
-            self.theta = positive_range(np.arctan2(p[1], p[0]))
-            self.phi = positive_range(np.arctan2(np.sqrt(p[0]**2 + p[1]**2), p[2]))
-
-        def ProjTo(self, G):
-            assert(self.Z is not None)
-            P0 = self.P*self.Z[self.py, self.px]
-            P1 = K.dot(G[0:3,0:3].dot(P0)+G[0:3,3][:,np.newaxis])
-            return P1[:2]/P1[2]
-
-    refid = 4
-    G0 = wGc[refid]
-    grad = calcGradient(frames[refid])
-    gthreshold = np.percentile(grad, 80)
-
-    ''' set up the reference Frame'''
-    fs = []
-    fs.append(Frame(img=frames[refid], Z=Zs[refid]))
-    fs[0].extractPts(gthreshold)
-
-    ''' set up matching Frame'''
-    seq = [0]
-    for fid in seq:
-        f = Frame(frames[fid], relPos(G0, wGc[fid]), Z=Zs[fid])
-        '''extract sailent points'''
-        f.extractPts(gthreshold)
-        ''' calculate epipolar info'''
-        M = calcTransMat(G0, wGc[fid])
-        f.calcPtsAngle(M)
-        fs[0].calcPtsAngle(M)
-        fs.append(f)
-
-
-    '''debug plot'''
-    if 1:
-        fig = plt.figure(num='all image'); fig.clear()
-        gs = plt.GridSpec(len(seq),2)
-        a =  fig.add_subplot(gs[:,0])
-        b = [fig.add_subplot(gs[sp,1]) for sp in range(len(seq))]
-
-        ''' ref image'''
-        fref = fs[0]
-        a.imshow(fref.im, interpolation='none')
-        a.plot(fref.px, fref.py, 'r.' )
-
-        ''' matching images'''
-        for i,sp in enumerate(b):
-            fcur = fs[i+1]
-            sp.imshow(fcur.im, interpolation='none')
-            sp.plot(fcur.px, fcur.py, 'b.', ms=2)
-            pref = fref.ProjTo(inv(fcur.wGc))
-            sp.plot(pref[0], pref[1], 'r.', ms=2)
-        fig.tight_layout()
 
 
 #%% pmbp
@@ -482,16 +671,6 @@ if __name__ == "__main__":
     debug = False#True #
     from sklearn.neighbors import NearestNeighbors
     from scipy import sparse
-
-    class memo:
-        def __init__(self, fn):
-            self.fn = fn
-            self.memo = {}
-        def __call__(self, *args):
-            keystr = tuple(args)
-            if keystr not in self.memo:
-                self.memo[keystr] = self.fn(*args)
-            return self.memo[keystr]
 
     if debug:
         f = plt.figure(num='icp')
