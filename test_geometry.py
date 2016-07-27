@@ -232,7 +232,7 @@ if __name__ == "__main__":
                                 np.ones(self.p_cnt)])
             ''' 3. patch pixels'''
             patt = [(y,x),(y-2,x),(y-1,x+1),(y,x+2),(y+1,x+1),(y+2,x),(y+1,x-1),(y,x-2),(y-1,x-1)]
-            self.v = np.vstack([self.im[ind] for ind in patt]).T
+            self.v = np.vstack([self.im[ind].astype('i2') for ind in patt]).T
             ''' 4. Neighbors Info'''
             self.nbrs = self.setNeighborsInfo(mask)
 
@@ -330,8 +330,8 @@ if __name__ == "__main__":
     bin1 = [[] for _ in xrange(360)]
     for pid, bid in enumerate(bin_inds1.tolist()):
         bin1[bid-1].append(pid)
-
-    debug = 1#0#
+#%%
+    debug = 0#1#
     plt.close('all')
     ''' 3. sequential processing'''
     if debug:
@@ -342,27 +342,48 @@ if __name__ == "__main__":
         plt.tight_layout()
         p1t0 = f1.ProjTo(f0)
 
-    d_result = np.full_like(f0.im, np.inf,'f')
     pidIn1 = np.full(f0.p_cnt,-1,'i')
 
-    pts0,pts1 = bin0[5],bin1[5]         # just for debug
-    n = 0
-    for pts0,pts1 in zip(bin0,bin1):
+    @memo
+    def calcMatchCost(p, q):
+        return np.abs(f0.v[p]-f1.v[q]).sum()/255.0 + 100*6.283*np.abs(theta0[p]-theta1[q])
+
+    def paircost(p, q, pidIn1):
+        dis = phi1[q] - phi0[p]
+        if dis<0:
+            return np.inf
+
+        nbrs = np.array(f0.nbrs[0][p]+f0.nbrs[1][p],'i')
+        nbrs_match = pidIn1[nbrs]
+        vm = nbrs_match!=-1
+        if vm.sum()<1:      # no valid neighbors
+            return 0
+        else:
+            nbrs_dis = phi1[nbrs_match[vm]] - phi0[nbrs[vm]]
+            return np.minimum(np.abs(nbrs_dis-dis),0.5).sum()/vm.sum()
+
+    def totalCost(pidIn1):
+        return np.sum([calcMatchCost(p,q)for p,q in zip(xrange(f0.p_cnt), pidIn1) if q!=-1]), \
+               np.sum([10*paircost(p,q,pidIn1) for p,q in zip(xrange(f0.p_cnt), pidIn1) if q!=-1])
+
+
+    for n in xrange(360):#[180]:#
+        pts0,pts1 = bin0[n],bin1[n]
+        print n
         ''' skip if empty'''
         if not (pts0 and pts1):
             continue
-        print n; n+=1
         ''' remove point that can only have negative disparity '''
         pts0,pts1 = np.array(pts0), np.array(pts1)
-        pts0 = pts0.compress(phi0[pts0]<phi1[pts1].max())
-        pts1 = pts1.compress(phi1[pts1]>phi0[pts0].min())
+        pts0 = pts0.compress( phi0[pts0]<phi1[pts1].max() )
+        pts1 = pts1.compress( phi1[pts1]>phi0[pts0].min() )
 
         ''' buffer local data'''
-        x0,y0,a0,b0,v0 = (foo[pts0] for foo in [f0.px, f0.py, phi0, theta0, f0.v])
-        x1,y1,a1,b1,v1 = (foo[pts1] for foo in [f1.px, f1.py, phi1, theta1, f1.v])
+        x0,y0,a0,b0 = (foo[pts0] for foo in [f0.px, f0.py, phi0, theta0])
+        x1,y1,a1,b1 = (foo[pts1] for foo in [f1.px, f1.py, phi1, theta1])
 
         if debug:
-            def drawCorrespondent(pidIn1, hold=False):
+            def drawCorrespondent(pidIn1, style='g-',hold=False):
                 if not hold:
                     ab.clear()
                 ab.plot(a0,b0,'rs')
@@ -372,10 +393,10 @@ if __name__ == "__main__":
                 vm = line_match!=-1
                 line_match = line_match.compress(vm)
                 ab.plot([a0[vm],phi1[line_match]],
-                        [b0[vm],theta1[line_match]],'g-')
-                plt.pause(0.01)
+                        [b0[vm],theta1[line_match]],style)
+#                plt.pause(0.01)
 
-            def drawCorrespondentOnImg(pidIn1, hold=False):
+            def drawCorrespondentOnImg(pidIn1, style='g-',hold=False):
                 if not hold:
                     al.clear(); ar.clear();
                 al.imshow(f0.im, interpolation='none'); al.plot(x0,y0,'r.')
@@ -386,8 +407,17 @@ if __name__ == "__main__":
                 vm = line_match!=-1
                 line_match = line_match.compress(vm)
                 al.plot([x0[vm],p1t0[0,line_match]],
-                        [y0[vm],p1t0[1,line_match]],'g-')
+                        [y0[vm],p1t0[1,line_match]],style)
                 plt.pause(0.01)
+
+            def trueAssignmentForCur():
+                tp = np.round(p1t0.take(pts1, axis=1))
+                tree = NearestNeighbors(n_neighbors=1, algorithm='auto').fit(tp.T)
+                dis, ind = tree.kneighbors(np.array([x0, y0]).T)
+                pidIn1 = np.full(f0.p_cnt,-1,'i')
+                pidIn1[pts0] = np.where(dis==0, pts1[ind], -1)
+                return pidIn1
+            ta = trueAssignmentForCur()
 
         ''' 1. random init'''
         for p in pts0:
@@ -401,7 +431,9 @@ if __name__ == "__main__":
             '''debug display'''
             if debug:
                 drawCorrespondent(pidIn1)
+                drawCorrespondent(ta,'y-.',hold=1)
                 drawCorrespondentOnImg(pidIn1)
+                print totalCost(pidIn1)
                 plt.waitforbuttonpress()
 
             ''' odd: forward=-1 even: backward=1 '''
@@ -432,32 +464,31 @@ if __name__ == "__main__":
                     sample_ind = np.random.choice(ind, 4) if len(ind)>0 else np.array([])
                     sample_list += pts1[sample_ind].ravel().tolist()
 
-                ''' evaluate all the sample''' # TODO: normalize
-                def paircost(p, q):
+                ''' evaluate all the sample'''
+                def _paircost(p, q):
                     dis = phi1[q] - phi0[p]
-                    return np.minimum(np.abs(np.array(nbr_dis)-dis), 0.5).sum() if dis>0 else 1e6
-
-                @memo
-                def calcMatchCost(p,q):
-                    return np.abs(f0.v[p]-f1.v[q]).sum()/255.0 + 100*6.283*np.abs(theta0[p]-theta1[q])
+                    if dis<0:
+                        return np.inf
+                    return np.minimum(np.abs(np.array(nbr_dis)-dis), 0.5).sum()/len(nbr_dis) if len(nbr_dis)>0 else 0
 
                 sample_list = list(set(sample_list))  # tricks to remove duplicates
-                sample_cost = [calcMatchCost(p,q)+10*paircost(p,q) for q in sample_list] #
+                sample_cost = [calcMatchCost(p,q)+10*_paircost(p,q) for q in sample_list] #
 
                 ''' save the best, if the cost still too high consider it occluded '''
                 best_sample = np.argmin(sample_cost)
                 pidIn1[p] = sample_list[best_sample] #if sample_cost[best_sample]<occ_cost else -1
 
 
-
     ''' 4. calc & plot depth'''
     vm = pidIn1!=-1
     x0,y0,a0,b0,m = (np.compress(vm, dump) for dump in [f0.px, f0.py, phi0, theta0, pidIn1])
+    d_result = np.full_like(f0.im, np.inf,'f')
     d_result[y0, x0] = calcRange(a0, phi1[m])
 
     v,u = np.where(np.logical_and(0<d_result,d_result<10))
     p3d = snormalize(np.array([(u-cx)/fx, (v-cy)/fy, np.ones(len(u))]))*d_result[v,u]
     plotxyzrgb(np.vstack([p3d,np.tile(Icur[v,u]*255,(3,1))]).T)
+    exit()
 #%%
     u,v = np.meshgrid(range(w), range(h))
     pref = backproject(u,v).astype('f')
@@ -844,12 +875,10 @@ if __name__ == "__main__":
             angr = calcAngle(M,rxc,ryc)[1]
             d_result[cyc, cxc] = calcRange(angr,angc)
 
-#        plt.pause(0.01)
-#        plt.waitforbuttonpress()
     v,u = np.where(np.logical_and(0<d_result,d_result<10))
     p3d = snormalize(np.array([(u-cx)/fx, (v-cy)/fy, np.ones(len(u))]))*d_result[v,u]
     plotxyzrgb(np.vstack([p3d,np.tile(Icur[v,u]*255,(3,1))]).T)
-
+    exit()
 #%%
 #    lim, rim = (Icur*255).astype('u1').copy(), (Iref*255).astype('u1').copy()
     lim, rim = calcGradient(Icur*255), calcGradient(Iref*255)
