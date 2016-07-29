@@ -277,14 +277,14 @@ if __name__ == "__main__":
             return P1[:2]/P1[2]
 
     ''' set up the reference Frame'''
-    refid = 4
+    refid = 0
     G0 = wGc[refid]
     grad = calcGradient(frames[refid])
     gthreshold = np.percentile(grad, 80)
 
     ''' set up matching Frame'''
     fs = []
-    seq = [refid, 0]
+    seq = [refid, 9]
     for fid in seq:
         f = Frame(frames[fid], relPos(wGc[refid],wGc[fid]), Z=Zs[fid], gthreshold=gthreshold)
         fs.append(f)
@@ -346,7 +346,7 @@ if __name__ == "__main__":
 
     @memo
     def calcMatchCost(p, q):
-        return np.abs(f0.v[p]-f1.v[q]).sum()/255.0 + 100*6.283*np.abs(theta0[p]-theta1[q])
+        return np.minimum(np.abs(f0.v[p]-f1.v[q]), 20).sum()/255.0 + 628.3*np.abs(theta0[p]-theta1[q])
 
     def paircost(p, q, pidIn1):
         dis = phi1[q] - phi0[p]
@@ -360,7 +360,7 @@ if __name__ == "__main__":
             return 0
         else:
             nbrs_dis = phi1[nbrs_match[vm]] - phi0[nbrs[vm]]
-            return np.minimum(np.abs(nbrs_dis-dis),0.5).sum()/vm.sum()
+            return np.minimum(np.abs(nbrs_dis-dis),1).sum()/vm.sum()
 
     def totalCost(pidIn1):
         return np.sum([calcMatchCost(p,q)for p,q in zip(xrange(f0.p_cnt), pidIn1) if q!=-1]), \
@@ -375,8 +375,10 @@ if __name__ == "__main__":
             continue
         ''' remove point that can only have negative disparity '''
         pts0,pts1 = np.array(pts0), np.array(pts1)
-        pts0 = pts0.compress( phi0[pts0]<phi1[pts1].max() )
-        pts1 = pts1.compress( phi1[pts1]>phi0[pts0].min() )
+        pts0,pts1 = pts0.compress( phi0[pts0]<phi1[pts1].max() ), pts1.compress( phi1[pts1]>phi0[pts0].min() )
+        ''' skip if empty'''
+        if len(pts0)==0 or len(pts0)==0:
+            continue
 
         ''' buffer local data'''
         x0,y0,a0,b0 = (foo[pts0] for foo in [f0.px, f0.py, phi0, theta0])
@@ -482,13 +484,18 @@ if __name__ == "__main__":
     ''' 4. calc & plot depth'''
     vm = pidIn1!=-1
     x0,y0,a0,b0,m = (np.compress(vm, dump) for dump in [f0.px, f0.py, phi0, theta0, pidIn1])
-    d_result = np.full_like(f0.im, np.inf,'f')
+    d_result = np.full_like(f0.im, np.nan,'f')
     d_result[y0, x0] = calcRange(a0, phi1[m])
+
+    df = scipy.ndimage.filters.generic_filter(d_result, np.nanmedian, size=15)
+    df = scipy.ndimage.filters.generic_filter(df, np.nanmean, size=10)
+    v,u = np.where(np.logical_and(0<df,df<10))
+    p3d = snormalize(np.array([(u-cx)/fx, (v-cy)/fy, np.ones(len(u))]))*df[v,u]
 
     v,u = np.where(np.logical_and(0<d_result,d_result<10))
     p3d = snormalize(np.array([(u-cx)/fx, (v-cy)/fy, np.ones(len(u))]))*d_result[v,u]
-    plotxyzrgb(np.vstack([p3d,np.tile(Icur[v,u]*255,(3,1))]).T)
-    exit()
+    plotxyzrgb(np.vstack([p3d,np.tile(f0.im[v,u],(3,1))]).T)
+#    exit()
 #%%
     u,v = np.meshgrid(range(w), range(h))
     pref = backproject(u,v).astype('f')
