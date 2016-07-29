@@ -70,7 +70,7 @@ if __name__ == "__main__":
         h,w = frames[0].shape[:2]
     fx,fy,cx,cy = K[0,0],K[1,1],K[0,2],K[1,2]
 
-    refid, curid = 0,9
+    refid, curid = 0,4
     Iref, G0, Z = frames[refid].astype('f')/255.0, wGc[refid].astype('f'), Zs[refid].astype('f')
     Icur, G1  = frames[curid].astype('f')/255.0, wGc[curid].astype('f')
     Iref3 = np.tile(Iref.ravel(), (3,1))
@@ -331,7 +331,7 @@ if __name__ == "__main__":
     for pid, bid in enumerate(bin_inds1.tolist()):
         bin1[bid-1].append(pid)
 #%%
-    debug = 0#1#
+    debug = 1#0#
     plt.close('all')
     ''' 3. sequential processing'''
     if debug:
@@ -366,7 +366,7 @@ if __name__ == "__main__":
         return np.sum([calcMatchCost(p,q)for p,q in zip(xrange(f0.p_cnt), pidIn1) if q!=-1]), \
                np.sum([10*paircost(p,q,pidIn1) for p,q in zip(xrange(f0.p_cnt), pidIn1) if q!=-1])
 
-
+    occ_cost = 10./255*9+0.2
     for n in xrange(360):#[180]:#
         pts0,pts1 = bin0[n],bin1[n]
         print n
@@ -471,14 +471,14 @@ if __name__ == "__main__":
                     dis = phi1[q] - phi0[p]
                     if dis<0:
                         return np.inf
-                    return np.minimum(np.abs(np.array(nbr_dis)-dis), 0.5).sum()/len(nbr_dis) if len(nbr_dis)>0 else 0
+                    return np.minimum(np.abs(np.array(nbr_dis)-dis), 1000.5).sum()/len(nbr_dis) if len(nbr_dis)>0 else 0
 
                 sample_list = list(set(sample_list))  # tricks to remove duplicates
                 sample_cost = [calcMatchCost(p,q)+10*_paircost(p,q) for q in sample_list] #
 
                 ''' save the best, if the cost still too high consider it occluded '''
                 best_sample = np.argmin(sample_cost)
-                pidIn1[p] = sample_list[best_sample] #if sample_cost[best_sample]<occ_cost else -1
+                pidIn1[p] = sample_list[best_sample] if sample_cost[best_sample]<occ_cost else -1
 
 
     ''' 4. calc & plot depth'''
@@ -487,12 +487,14 @@ if __name__ == "__main__":
     d_result = np.full_like(f0.im, np.nan,'f')
     d_result[y0, x0] = calcRange(a0, phi1[m])
 
-    df = scipy.ndimage.filters.generic_filter(d_result, np.nanmedian, size=15)
-    df = scipy.ndimage.filters.generic_filter(df, np.nanmean, size=10)
-    v,u = np.where(np.logical_and(0<df,df<10))
+    df = d_result.copy()
+    df[d_result>5] = np.inf
+    df = scipy.ndimage.filters.generic_filter(df, np.nanmedian, size=15)
+    df = scipy.ndimage.filters.generic_filter(df, np.nanmean, size=5)
+    v,u = np.where(np.logical_and(0<df,df<5))
     p3d = snormalize(np.array([(u-cx)/fx, (v-cy)/fy, np.ones(len(u))]))*df[v,u]
 
-    v,u = np.where(np.logical_and(0<d_result,d_result<10))
+    v,u = np.where(np.logical_and(0<d_result,d_result<5))
     p3d = snormalize(np.array([(u-cx)/fx, (v-cy)/fy, np.ones(len(u))]))*d_result[v,u]
     plotxyzrgb(np.vstack([p3d,np.tile(f0.im[v,u],(3,1))]).T)
 #    exit()

@@ -48,6 +48,9 @@ def relPos(wG0, wG1):
 def transform(G,x):
     return G[:3,:3].dot(x)+G[:3,3]
 
+def conditions(*args):
+    return reduce(np.logical_and, args)
+
 normalize = lambda x:x/np.linalg.norm(x)
 snormalize = lambda x:x/np.linalg.norm(x, axis=0)
 vec = lambda x:np.reshape(x,(-1,1))
@@ -189,30 +192,29 @@ if __name__ == "__main__":
         a,b,c = np.hsplit(pr.T.dot(rFc), 3)    # a*xc+b*yc+c=0
         norm = np.sqrt(a**2+b**2)
         dxy = np.hstack([np.sign(Tcr[0])*np.abs(b/norm), -np.sign(Tcr[1])*np.abs(a/norm)]).T  # TODO: principle?
+        return pr_inf, dxy
 
+    def checkEplRange(pr_inf, dxy):
+        # pr_inf.x/y + d*dxy = {0,w}/{0,h}
+        d = np.vstack([-pr_inf[0]/dxy[0], (w-pr_inf[0])/dxy[0], -pr_inf[1]/dxy[1], (h-pr_inf[1])/dxy[1]])
+        d.sort(axis=0)
+        d_min, d_max = d[1],d[2]
+        pb1, pb2 = pr_inf+d_min*dxy, pr_inf+d_max*dxy # the two boundary point that is closest to pr_inf
 
-        x_limit = np.maximum(-pr_inf[0]/dxy[0], (w-pr_inf[0])/dxy[0])   # pr_inf.x + x_limit*dx = {0,w}
-        y_limit = np.maximum(-pr_inf[1]/dxy[1], (h-pr_inf[1])/dxy[1])   # pr_inf.y + y_limit*dy = {0,h}
-        dinv_max = np.minimum(x_limit, y_limit)
-        pr_close = pr_inf + dinv_max*dxy
+        """ \2| 2\|3    Region 1 is the valid image area,
+            --+---+--   suppose the epiline is going from pr_inf to bottom-right
+             \| 1 |\    then pb1 & pb2 are the interception points of epi-line and the 4 extended image border
+            --+---+--   If pr_inf is in Region 3 & 4, then the epiline does not touch the image area
+             3|\4 |4 \
 
-#        # TODO: pr_inf outside image
-#        xl = np.argmax(0, -pr_inf[0]/dxy[0], (w-pr_inf[0])/dxy[0])
-#        yl = np.argmax(0, -pr_inf[1]/dxy[1], (h-pr_inf[1])/dxy[1])
-#        # >0 means a hit
-#        # each pixel in R will have 4 special points in C: pinf + pe + two border point
-#        # under C's coordinate
-#        pe = normalize(Tcr)
-#        pinf = Rcr.dot(snormalize(backproject(xr,yr)))
-#        l0 = np.cross(pe,pinf.T)
-#        corners = [[0,0],[0,h],[w,h],[w,0]]
-#        corners = [normalize(np.array([(cn[0]-cx)/fx,
-#                                       (cn[1]-cy)/fy,
-#                                       1])) for cn in corners]
-#        ls = [np.cross(corners[c0],corners[c1]) for c0,c1 in [(0,1),(3,2),(1,2),(0,3)]]
-#        intersect = [np.cross(l,l_) for c0,c1 in [(0,1),(3,2),(1,2),(0,3)]]
-        return pr_inf, pr_close, dxy, dinv_max
-
+        if   isInValidReigion(pr_inf):            k_min,k_max = 0,d_max
+        elif isInValidReigion(pb1) and d_min>0: k_min,k_max = d_min, d_max
+        else:  k_min,k_max = 0,0 """
+        isInValidReigion = lambda p: conditions(p[0]>0,p[0]<w,p[1]>0,p[1]<h)
+        cond = [ isInValidReigion(pr_inf),      # pr_inf is in Region 1, so everything is fine
+                 np.logical_and(isInValidReigion(pb1), d_min>0)] # pr_inf is in Region 2
+        k_max = np.select( cond, [d_max, d_max], default = 0)
+        k_min = np.select( cond[1], [d_min] )
 
 
     def test_calcEpl():
@@ -281,6 +283,6 @@ if __name__ == "__main__":
         fig.tight_layout()
 
     pinf,pcls,dxy,dmax = calcEpl(f0.px,f0.py, getG(f0,f1))
-    for p in xrange(f0.p_cnt):
-        pass
+#    for p in xrange(f0.p_cnt):
+#        pass
 
