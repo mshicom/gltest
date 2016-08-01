@@ -20,9 +20,6 @@ from vtk_visualizer import *
 
 from scipy import weave
 
-
-
-
 def loaddata1():
     data = scipy.io.loadmat('data.mat')
     frames, = data['I']
@@ -31,8 +28,7 @@ def loaddata1():
     Z, = data['Z']/100.0
     return frames, G, K, Z
 
-def sample(dIc,x,y):
-        return scipy.ndimage.map_coordinates(dIc, (y,x), order=1, cval=np.nan)
+
 
 def metric(P): return P[:-1]/P[-1]
 def skew(e): return np.array([[  0,  -e[2], e[1]],
@@ -40,6 +36,11 @@ def skew(e): return np.array([[  0,  -e[2], e[1]],
                               [-e[1], e[0],   0]])
 def isScalar(obj):
     return not hasattr(obj, "__len__")
+
+def sample(dIc,x,y):
+    if isScalar(x):
+        x,y = np.array([x]),np.array([y])
+    return scipy.ndimage.map_coordinates(dIc, (y,x), order=1, cval=np.nan)
 
 def relPos(wG0, wG1):
     return np.dot(np.linalg.inv(wG0), wG1)
@@ -74,7 +75,8 @@ if __name__ == "__main__":
 
 
     def trueProj(xr, yr, cGr, Zr):
-        pr = backproject(xr, yr)*Zr[yr,xr]
+        zr = sample(Zr, xr, yr)
+        pr = backproject(xr, yr)*zr
         if isScalar(xr):
             pc =  K.dot(cGr[0:3,0:3].dot(pr)+cGr[0:3,3])
         else:
@@ -100,7 +102,7 @@ if __name__ == "__main__":
                      'nbrs','v','grad','orin',
                      'Z']
         def __init__(self, img, wGc=np.eye(4), Z=None, gthreshold=None):
-            self.im = img.copy()
+            self.im = img.astype('f')/255.0
             self.wGc = wGc.copy()
             if not Z is None:
                 self.Z = Z.copy()
@@ -182,39 +184,63 @@ if __name__ == "__main__":
         return rFc
 
     def calcEpl(xr,yr,rGc,K=K):
-        ''' pc = pr_inf + depth*dxy '''
+        ''' pc = Pinf + depth*dxy '''
         cGr = inv(rGc)
         Rcr,Tcr = cGr[:3,:3],cGr[:3,3]
         pr = np.array([xr, yr, 1 if isScalar(xr) else np.ones(len(xr))])
-        pr_inf = metric(K.dot(Rcr.dot(inv(K).dot(pr))))  # <= projection of points at infinity
+        Pinf = K.dot(Rcr.dot(inv(K).dot(pr)))  # <= projection of points at infinity
+        Pinf /= Pinf[2]
+        Pe = K.dot(Tcr)
 
         rFc = calcF(rGc)
         a,b,c = np.hsplit(pr.T.dot(rFc), 3)    # a*xc+b*yc+c=0
         norm = np.sqrt(a**2+b**2)
         dxy = np.hstack([np.sign(Tcr[0])*np.abs(b/norm), -np.sign(Tcr[1])*np.abs(a/norm)]).T  # TODO: principle?
-        return pr_inf, dxy
 
-    def checkEplRange(pr_inf, dxy):
-        # pr_inf.x/y + d*dxy = {0,w}/{0,h}
-        d = np.vstack([-pr_inf[0]/dxy[0], (w-pr_inf[0])/dxy[0], -pr_inf[1]/dxy[1], (h-pr_inf[1])/dxy[1]])
-        d.sort(axis=0)
-        d_min, d_max = d[1],d[2]
-        pb1, pb2 = pr_inf+d_min*dxy, pr_inf+d_max*dxy # the two boundary point that is closest to pr_inf
+        x_limit = np.maximum(-Pinf[0]/dxy[0], (w-Pinf[0])/dxy[0])   # Pinf.x + x_limit*dx = {0,w}
+        y_limit = np.maximum(-Pinf[1]/dxy[1], (h-Pinf[1])/dxy[1])   # Pinf.y + y_limit*dy = {0,h}
+        dinv_max = np.minimum(x_limit, y_limit)
+        Pe = Pinf[:2] + dinv_max*dxy
 
-        """ \2| 2\|3    Region 1 is the valid image area,
-            --+---+--   suppose the epiline is going from pr_inf to bottom-right
-             \| 1 |\    then pb1 & pb2 are the interception points of epi-line and the 4 extended image border
-            --+---+--   If pr_inf is in Region 3 & 4, then the epiline does not touch the image area
-             3|\4 |4 \
+        Trc = rGc[:3,3]
+        a,b,c = np.hsplit(rFc.dot(Pinf), 3)    # a*xc+b*yc+c=0
+        norm = np.sqrt(a**2+b**2)
+        dxy_local = np.hstack([np.sign(Trc[0])*np.abs(b/norm), -np.sign(Trc[1])*np.abs(a/norm)]).T  # TODO: principle?
 
-        if   isInValidReigion(pr_inf):            k_min,k_max = 0,d_max
-        elif isInValidReigion(pb1) and d_min>0: k_min,k_max = d_min, d_max
-        else:  k_min,k_max = 0,0 """
-        isInValidReigion = lambda p: conditions(p[0]>0,p[0]<w,p[1]>0,p[1]<h)
-        cond = [ isInValidReigion(pr_inf),      # pr_inf is in Region 1, so everything is fine
-                 np.logical_and(isInValidReigion(pb1), d_min>0)] # pr_inf is in Region 2
-        k_max = np.select( cond, [d_max, d_max], default = 0)
-        k_min = np.select( cond[1], [d_min] )
+#        '''P = Pinf + λ*Pe'''
+#        az = -Pinf[2]/Pe[2]                         # Pz = Pinf[2] + λ*Pe[2] > 0
+#        ax = (Pinf[0]-w*Pinf[2])/(w*Pe[2]-Pe[0])    # 0 < fx*(Px/Pz) + cx < w
+#        ay = (Pinf[1]-h*Pinf[2])/(h*Pe[2]-Pe[1])    # 0 < fy*(Py/Pz) + cx < h
+#
+##        inf = np.full_like(az, np.inf)
+#        max_idepth0, min_idepth0 = (inf, az) if Pe[2]>0 else (az, 0)
+##        A = -cx/fx
+##        if Pe[2]>0:
+##            denominator = Pe[0]-A*Pe[2]
+##            ax = (A*Pinf[2]-Pinf[0])/denominator
+##            max_idepth0, min_idepth0 = (inf, az) if denominator>0 else (az, 0)
+#
+#        max_idepth = np.min(np.vstack([ax, ay, az]),axis=0)
+#        Pe = Pinf + max_idepth*Pe
+#
+#        Pe = Pe/Pe[2]
+#        Pinf = Pinf/Pinf[2]
+
+        return Pinf[:2],dinv_max, dxy, dxy_local
+
+    def makeAndCheckEPL(xr, yr, rGc, im):
+        cGr = inv(rGc)
+        Rcr,Tcr = cGr[:3,:3],cGr[:3,3]
+        epx = -fx*Tcr[0] + Tcr[2]*(xr-cx)
+        epy = -fy*Tcr[1] + Tcr[2]*(yr-cy)
+        # ======== check epl length =========
+        eplLengthSquared = epx*epx+epy*epy
+
+        gx = im[yr,xr+1] - im[yr,xr-1]
+        gy = im[yr+1,xr] - im[yr-1,xr]
+        eplGradSquared = gx*epx + gy*epy
+        eplGradSquared = eplGradSquared*eplGradSquared / eplLengthSquared
+
 
 
     def test_calcEpl():
@@ -229,8 +255,9 @@ if __name__ == "__main__":
             pcur = trueProj(pref[0], pref[1], cGr=cGr, Zr=f0.Z)
             a.plot(pcur[0]+640, pcur[1],'b.')
 
-            pb,pe,dxy,dm = calcEpl(pref[0], pref[1], inv(cGr))
+            pb,dmax,dxy,dxy_local = calcEpl(pref[0], pref[1], inv(cGr))
             a.plot([pb[0]+640,pe[0]+640], [pb[1],pe[1]],'g-')
+            a.plot([pcur[0], pcur[0]+100*dxy_local[0]], [pcur[1],pcur[1]+100*dxy_local[1]],'b-')
 
     def getG(f0,f1):
         return np.dot(inv(f0.wGc), f1.wGc)
@@ -282,7 +309,42 @@ if __name__ == "__main__":
             sp.plot(pref[0], pref[1], 'r.', ms=2)
         fig.tight_layout()
 
-    pinf,pcls,dxy,dmax = calcEpl(f0.px,f0.py, getG(f0,f1))
+#    pinf,pcls,dxy = calcEpl(f0.px,f0.py, getG(f0,f1))
+#    c = savgol_coeffs(5,2,pos=2,deriv=1,use='dot')
+    def test_EPLMatch():
+        f,(a,b) = plt.subplots(2, 1, num='search')
+        a.imshow(sim(f0.im, f1.im), interpolation='none')
+
+        plt.pause(0.01)
+        pref = np.round(plt.ginput(1, timeout=-1)[0])
+        a.plot(pref[0], pref[1],'r.')
+
+        cGr = relPos(f1.wGc, f0.wGc)
+        pcur = trueProj(pref[0], pref[1], cGr=cGr, Zr=f0.Z)
+        a.plot(pcur[0]+640, pcur[1],'b.')
+
+        pb,dm,dxy,dxy_local = calcEpl(pref[0], pref[1], inv(cGr))
+        pe = pb+dm*dxy
+        a.plot([pb[0]+640,pe[0]+640], [pb[1],pe[1]],'g-')
+
+        patt = vec(dxy)*np.arange(-4,4+1)
+        sam_cnt = np.floor(dm).astype('i')
+        psam = np.vstack([np.linspace(pb[0],pe[0],sam_cnt+1),
+                          np.linspace(pb[1],pe[1],sam_cnt+1)])
+        a.plot(psam[0]+640, psam[1],'g.')
+        patt_local = vec(pref)-vec(dxy_local)*np.arange(-4,4+1)
+        I_local = sample(f0.im, patt_local[0], patt_local[1])
+        err = np.empty(sam_cnt,'f')
+        a.plot(patt_local[0], patt_local[1],'g.')
+        a.plot(pref[0], pref[1],'r.')
+        for i in xrange(sam_cnt):
+            s = sample(f1.im, psam[0,i]+patt[0], psam[1,i]+patt[1])
+            err[i] = np.sum(np.minimum(I_local - s, 0.30)**2)
+        best = np.nanargmin(err)#np.argpartition(err,1)[:1]
+        b.plot(err)
+        b.vlines(best,0,1)
+        a.plot(psam[0,best]+640, psam[1,best],'r*')
+    test_EPLMatch()
 #    for p in xrange(f0.p_cnt):
 #        pass
 
