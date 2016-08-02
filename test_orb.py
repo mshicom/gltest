@@ -36,6 +36,8 @@ def skew(e): return np.array([[  0,  -e[2], e[1]],
                               [-e[1], e[0],   0]])
 def isScalar(obj):
     return not hasattr(obj, "__len__")
+def toArray(x):
+    return np.array([x]) if isScalar(x) else x
 
 def sample(dIc,x,y):
     if isScalar(x):
@@ -176,6 +178,45 @@ if __name__ == "__main__":
             P1 = K.dot(G[0:3,0:3].dot(P0)+G[0:3,3][:,np.newaxis])
             return P1[:2]/P1[2]
 
+        def searchEPL(self, f1, win_width=4):
+
+            # xr, yr, win_width = pref[0], pref[1],4
+            px, py = self.px, self.py
+            node_cnt = self.p_cnt
+            rGc = relPos(self.wGc, f1.wGc)
+
+            pb,dm,dxy,dxy_local = calcEpl(px, py, rGc)
+            best = np.empty((2,node_cnt),'f')
+            valid_mask = dm>0
+            for n in xrange(node_cnt):
+                print n
+                p0 = np.array([px[n],py[n]])
+
+                ref_pos = vec(p0) - vec(dxy_local[:,n])*np.arange(-win_width, win_width+1) # TODO: correct the sign
+                ref_samples = sample(self.im, ref_pos[0], ref_pos[1])
+
+                sam_cnt = np.floor(dm[n]).astype('i')
+                cur_pos = vec(pb[:,n]) + vec(dxy[:,n])*np.arange(-win_width, sam_cnt+win_width)
+                cur_samples = sample(f1.im, cur_pos[0], cur_pos[1])
+
+                err = np.empty(sam_cnt,'f')
+                for i in xrange(sam_cnt):
+                    diff = ref_samples - cur_samples[i:i+2*win_width+1]
+                    vm = ~np.isnan(diff)
+                    err[i] = np.minimum(diff[vm]**2, 1**2).sum()/vm.sum()
+                best[:,n] = cur_pos[:,np.nanargmin(err)+win_width]
+            return best
+
+        def makePC(self, depth, vmin=0, vmax=10):
+            vm_ind, = np.where(conditions(depth>vmin,  depth<vmax))
+            p3d = self.P*depth
+            I = np.tile(self.im[self.py, self.px]*255,(3,1))
+            P = np.vstack([p3d, I]).T
+            return P[vm_ind,:]      # Nx6
+
+
+
+
 
     def calcF(rGc, K=K):
         ''' xr'*F*xc = 0 '''
@@ -203,7 +244,7 @@ if __name__ == "__main__":
         Pe = Pinf[:2] + dinv_max*dxy
 
         Trc = rGc[:3,3]
-        a,b,c = np.hsplit(rFc.dot(Pinf), 3)    # a*xc+b*yc+c=0
+        a,b,c = np.hsplit(rFc.dot(Pinf).T, 3)    # a*xc+b*yc+c=0
         norm = np.sqrt(a**2+b**2)
         dxy_local = np.hstack([np.sign(Trc[0])*np.abs(b/norm), -np.sign(Trc[1])*np.abs(a/norm)]).T  # TODO: principle?
 
@@ -227,19 +268,6 @@ if __name__ == "__main__":
 #        Pinf = Pinf/Pinf[2]
 
         return Pinf[:2],dinv_max, dxy, dxy_local
-
-    def makeAndCheckEPL(xr, yr, rGc, im):
-        cGr = inv(rGc)
-        Rcr,Tcr = cGr[:3,:3],cGr[:3,3]
-        epx = -fx*Tcr[0] + Tcr[2]*(xr-cx)
-        epy = -fy*Tcr[1] + Tcr[2]*(yr-cy)
-        # ======== check epl length =========
-        eplLengthSquared = epx*epx+epy*epy
-
-        gx = im[yr,xr+1] - im[yr,xr-1]
-        gy = im[yr+1,xr] - im[yr-1,xr]
-        eplGradSquared = gx*epx + gy*epy
-        eplGradSquared = eplGradSquared*eplGradSquared / eplLengthSquared
 
 
 
@@ -268,11 +296,11 @@ if __name__ == "__main__":
 
         Base0 = Trc/Baseline      # epipolar: a unit vector pointed to the other camerea
         ray0 = snormalize(backproject(xr,yr))
-        phi0 = np.arccos(ray0.dot(Base0))   # Angle a
+        phi0 = np.arccos(ray0.T.dot(Base0))   # Angle a
 
         Base1 = -Rrc.T.dot(Base0)
         ray1 = snormalize(backproject(xc,yc))
-        phi1 = np.arccos(ray1.dot(Base1))   # Angle b
+        phi1 = np.arccos(ray1.T.dot(Base1))   # Angle b
 
         c = np.pi-phi1-phi0
         Range_r = Baseline*np.sin(phi1)/np.sin(c)     # Edge B = Edge C/sin(c)*sin(b)
@@ -280,13 +308,16 @@ if __name__ == "__main__":
         return depth_r
 
     ''' set up matching Frame'''
-    refid = 4
+    refid = 0
     fs = []
-    seq = [refid, 0,2,6,9]
+    seq = [refid, 9]
     for fid in seq:
         f = Frame(frames[fid], wGc[fid], Z=Zs[fid])
         fs.append(f)
     f0,f1 = fs[0],fs[1]
+    match = f0.searchEPL(f1,4)
+    d = triangulate(f0.px,f0.py,match[0],match[1], getG(f0,f1))
+    plotxyzrgb(f0.makePC(d, 0, 5))
 
     ''' plot all image'''
     if 1:
@@ -309,42 +340,56 @@ if __name__ == "__main__":
             sp.plot(pref[0], pref[1], 'r.', ms=2)
         fig.tight_layout()
 
+
 #    pinf,pcls,dxy = calcEpl(f0.px,f0.py, getG(f0,f1))
 #    c = savgol_coeffs(5,2,pos=2,deriv=1,use='dot')
-    def test_EPLMatch():
-        f,(a,b) = plt.subplots(2, 1, num='search')
-        a.imshow(sim(f0.im, f1.im), interpolation='none')
 
-        plt.pause(0.01)
-        pref = np.round(plt.ginput(1, timeout=-1)[0])
-        a.plot(pref[0], pref[1],'r.')
+    def eplMatch(xr, yr, f0, f1, win_width = 3, debug=False):
+        # xr, yr, win_width = pref[0], pref[1],4
+        rGc = relPos(f0.wGc, f1.wGc)
+        pb,dm,dxy,dxy_local = calcEpl(xr, yr, rGc)
 
-        cGr = relPos(f1.wGc, f0.wGc)
-        pcur = trueProj(pref[0], pref[1], cGr=cGr, Zr=f0.Z)
-        a.plot(pcur[0]+640, pcur[1],'b.')
+        p0 = np.array([xr,yr])
 
-        pb,dm,dxy,dxy_local = calcEpl(pref[0], pref[1], inv(cGr))
-        pe = pb+dm*dxy
-        a.plot([pb[0]+640,pe[0]+640], [pb[1],pe[1]],'g-')
+        ref_pos = vec(p0) - vec(dxy_local)*np.arange(-win_width, win_width+1) # TODO: correct the sign
+        ref_samples = sample(f0.im, ref_pos[0], ref_pos[1])
 
-        patt = vec(dxy)*np.arange(-4,4+1)
         sam_cnt = np.floor(dm).astype('i')
-        psam = np.vstack([np.linspace(pb[0],pe[0],sam_cnt+1),
-                          np.linspace(pb[1],pe[1],sam_cnt+1)])
-        a.plot(psam[0]+640, psam[1],'g.')
-        patt_local = vec(pref)-vec(dxy_local)*np.arange(-4,4+1)
-        I_local = sample(f0.im, patt_local[0], patt_local[1])
+        cur_pos = vec(pb) + vec(dxy)*np.arange(-win_width, sam_cnt+win_width)
+        cur_samples = sample(f1.im, cur_pos[0], cur_pos[1])
+
         err = np.empty(sam_cnt,'f')
-        a.plot(patt_local[0], patt_local[1],'g.')
-        a.plot(pref[0], pref[1],'r.')
         for i in xrange(sam_cnt):
-            s = sample(f1.im, psam[0,i]+patt[0], psam[1,i]+patt[1])
-            err[i] = np.sum(np.minimum(I_local - s, 0.30)**2)
-        best = np.nanargmin(err)#np.argpartition(err,1)[:1]
-        b.plot(err)
-        b.vlines(best,0,1)
-        a.plot(psam[0,best]+640, psam[1,best],'r*')
-    test_EPLMatch()
-#    for p in xrange(f0.p_cnt):
-#        pass
+            err[i] = np.sum(np.minimum(ref_samples - cur_samples[i:i+2*win_width+1], 1)**2)
+        best = np.nanargmin(err)
+
+        if debug:
+            f = plt.figure(num='epl match')
+            gs = plt.GridSpec(2,2)
+            al,ar = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
+            ab = f.add_subplot(gs[1,:])
+
+            al.imshow(f0.im, interpolation='none'); ar.imshow(f1.im, interpolation='none')
+            pt = trueProj(ref_pos[0],ref_pos[1], cGr=inv(rGc), Zr=f0.Z)
+            ar.plot(pt[0], pt[1],'b.')
+            al.plot(ref_pos[0], ref_pos[1],'g.'); al.plot(xr, yr,'r.')
+            ar.plot(cur_pos[0], cur_pos[1],'g.')
+            ab.plot(err)
+            ab.vlines(best,0,1)
+            ar.plot(cur_pos[0,best+win_width], cur_pos[1,best+win_width],'r*')
+        return best
+
+    def test_EPLMatch():
+        f = plt.figure(num='epl match')
+        gs = plt.GridSpec(2,2)
+        al,ar = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
+        ab = f.add_subplot(gs[1,:])
+        plt.tight_layout()
+        al.imshow(f0.im, interpolation='none'); ar.imshow(f1.im, interpolation='none')
+
+        pref = plt.ginput(1, timeout=-1)[0]
+        best0 = eplMatch(pref[0], pref[1], f0, f1, win_width=3, debug=True)
+
+
+
 
