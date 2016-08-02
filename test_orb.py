@@ -187,7 +187,8 @@ if __name__ == "__main__":
 
             pb,dm,dxy,dxy_local = calcEpl(px, py, rGc)
             best = np.empty((2,node_cnt),'f')
-            valid_mask = dm>0
+
+
             for n in xrange(node_cnt):
                 print n
                 p0 = np.array([px[n],py[n]])
@@ -195,15 +196,34 @@ if __name__ == "__main__":
                 ref_pos = vec(p0) - vec(dxy_local[:,n])*np.arange(-win_width, win_width+1) # TODO: correct the sign
                 ref_samples = sample(self.im, ref_pos[0], ref_pos[1])
 
-                sam_cnt = np.floor(dm[n]).astype('i')
+                sam_cnt = np.floor(dm[n])
                 cur_pos = vec(pb[:,n]) + vec(dxy[:,n])*np.arange(-win_width, sam_cnt+win_width)
                 cur_samples = sample(f1.im, cur_pos[0], cur_pos[1])
-
                 err = np.empty(sam_cnt,'f')
-                for i in xrange(sam_cnt):
-                    diff = ref_samples - cur_samples[i:i+2*win_width+1]
-                    vm = ~np.isnan(diff)
-                    err[i] = np.minimum(diff[vm]**2, 1**2).sum()/vm.sum()
+#                if 0:
+#                for i in xrange(int(sam_cnt)):
+#                    diff = ref_samples - cur_samples[i:i+2*win_width+1]
+#                    vm = ~np.isnan(diff)
+#                    err[i] = np.minimum(diff[vm]**2, 1**2).sum()/vm.sum()
+#                best[:,n] = cur_pos[:,np.nanargmin(err)+win_width]
+#                else:
+                code = r'''
+                for(int i=0; i<(int)sam_cnt; i++ )
+                {
+                    float diff = 0;
+                    for(size_t j=0; j<2*%d+1;j++ )
+                    {
+                        float cur = CUR_SAMPLES1(i+j);
+                        diff += std::isnan(cur)? 0 : std::fabs( REF_SAMPLES1(j) - cur);
+                    }
+                    ERR1(i) = diff;
+                }
+                ''' % win_width
+                weave.inline(code,
+                   ['ref_samples','cur_samples','err', 'sam_cnt'],
+                    compiler='gcc',headers=['<chrono>','<cmath>'],
+                    extra_compile_args=['-std=gnu++11 -msse2 -O3'],
+                    verbose=2 )
                 best[:,n] = cur_pos[:,np.nanargmin(err)+win_width]
             return best
 
@@ -308,9 +328,9 @@ if __name__ == "__main__":
         return depth_r
 
     ''' set up matching Frame'''
-    refid = 0
+    refid = 4
     fs = []
-    seq = [refid, 9]
+    seq = [refid, 0]
     for fid in seq:
         f = Frame(frames[fid], wGc[fid], Z=Zs[fid])
         fs.append(f)
@@ -345,7 +365,7 @@ if __name__ == "__main__":
 #    c = savgol_coeffs(5,2,pos=2,deriv=1,use='dot')
 
     def eplMatch(xr, yr, f0, f1, win_width = 3, debug=False):
-        # xr, yr, win_width = pref[0], pref[1],4
+        # xr, yr, win_width,debug = pref[0], pref[1],4,True
         rGc = relPos(f0.wGc, f1.wGc)
         pb,dm,dxy,dxy_local = calcEpl(xr, yr, rGc)
 
@@ -358,10 +378,31 @@ if __name__ == "__main__":
         cur_pos = vec(pb) + vec(dxy)*np.arange(-win_width, sam_cnt+win_width)
         cur_samples = sample(f1.im, cur_pos[0], cur_pos[1])
 
-        err = np.empty(sam_cnt,'f')
-        for i in xrange(sam_cnt):
-            err[i] = np.sum(np.minimum(ref_samples - cur_samples[i:i+2*win_width+1], 1)**2)
-        best = np.nanargmin(err)
+        err = np.full(sam_cnt,np.inf,'f')
+        if 0:
+            for i in xrange(sam_cnt):
+                err[i] = np.sum(np.minimum(ref_samples - cur_samples[i:i+2*win_width+1], 1)**2)
+            best = np.nanargmin(err)
+        else:
+            code = r'''
+            int N = (int)sam_cnt;
+            for(int i=0; i<N; i++ )
+            {
+                float diff = 0;
+                for(size_t j=0; j<2*(size_t)win_width+1;j++ )
+                    diff += std::fabs( REF_SAMPLES1(j) - CUR_SAMPLES1(i+j));
+                ERR1(i) = diff;
+            }
+//            std::vector<float> vec(err, err+N);
+//            int winner = vec.begin() - std::min_element(vec.begin(), vec.end());
+//            return_val = Py::new_reference_to(Py::Int(winner));
+            '''
+            weave.inline(code,
+               ['ref_samples','cur_samples','err','sam_cnt','win_width'],
+                compiler='gcc',headers=['<algorithm>','<cmath>','<vector>'],
+                extra_compile_args=['-std=gnu++11 -msse2 -O3'],
+                verbose=2  )
+            best = np.nanargmin(err)
 
         if debug:
             f = plt.figure(num='epl match')
