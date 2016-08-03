@@ -134,7 +134,10 @@ if __name__ == "__main__":
             if gthreshold is None:
                 gthreshold = np.percentile(grad, 80)
             u, v = np.meshgrid(range(w),range(h))
-            mask = reduce(np.logical_and, [grad>gthreshold, u>1, v>1, u<w-2, v<h-2]) # exclude border pixels
+            border_width = 4
+            mask = reduce(np.logical_and, [grad>gthreshold,
+                                           w-border_width>u, u>=border_width,
+                                           h-border_width>v, v>=border_width]) # exclude border pixels
             y,x = np.where(mask)
             self.py, self.px = y,x
             self.p_cnt = len(x)
@@ -190,13 +193,13 @@ if __name__ == "__main__":
             return P1[:2]/P1[2]
 
         def searchEPL(self, f1, win_width=4):
-            # xr, yr, win_width = pref[0], pref[1],4
             px, py = self.px, self.py
             node_cnt = self.p_cnt
             rGc = relPos(self.wGc, f1.wGc)
 
             pb,dm,dxy,dxy_local = calcEpl(px, py, rGc)
             best = np.empty(node_cnt,'i')
+
             if 0:
                 for n in xrange(node_cnt):
                     print n
@@ -206,6 +209,10 @@ if __name__ == "__main__":
                     ref_samples = sample(self.im, ref_pos[0], ref_pos[1])
 
                     sam_cnt = np.floor(dm[n])
+                    if sam_cnt<1:
+                        best[n] = -1
+                        continue
+
                     cur_pos = vec(pb[:,n]) + vec(dxy[:,n])*np.arange(-win_width, sam_cnt+win_width)
                     cur_samples = sample(f1.im, cur_pos[0], cur_pos[1])
                     err = np.empty(sam_cnt,'f')
@@ -238,43 +245,46 @@ if __name__ == "__main__":
                 std::vector<float> ref_samples(2*win_width+1);
                 std::vector<float> cur_samples(1000);
 
+                // std::raise(SIGINT);
+
                 // foreach pixel in ref image
-                for(size_t p=0; p<M; p++){
+                for(size_t p_id=0; p_id<M; p_id++){
+
                     /* 1. Sampling the Intensity */
-                    for(int i=0; i<win_size; i++)
-                        ref_samples[i] = sample(ima,width,
-                                                PX1(p)-(i-win_width)*DXY_LOCAL2(0,p),
-                                                PY1(p)-(i-win_width)*DXY_LOCAL2(1,p));
-
-                    size_t sample_size = (size_t)DM1(p);
-                    cur_samples.reserve(sample_size+2*win_width);
-
+                    int sample_size = std::floor(DM1(p_id));
+                    if(sample_size<1){
+                        BEST1(p_id) = -1;  continue;   // discard pixel whose epi-line length is 0
+                    }
+                    cur_samples.resize(sample_size+2*win_width);
                     for(int i=0; i<sample_size+2*win_width; i++)
                         cur_samples[i] = sample(imb, width,
-                                                PB2(0,p)+(i-win_width)*DXY2(0,p),
-                                                PB2(1,p)+(i-win_width)*DXY2(1,p));
+                                                PB2(0,p_id)+(i-win_width)*DXY2(0,p_id),
+                                                PB2(1,p_id)+(i-win_width)*DXY2(1,p_id));
 
-                    /* 2. Matching */
-                    float min_diff = std::numeric_limits<float>::max();
+                    for(int pos=0; pos<win_size; pos++)
+                        ref_samples[pos] = sample(ima,width,
+                                                PX1(p_id)-(pos-win_width)*DXY_LOCAL2(0,p_id),
+                                                PY1(p_id)-(pos-win_width)*DXY_LOCAL2(1,p_id));
+
+                    /* 2. go through all the points in cur */
+                    float min_diff = std::numeric_limits<float>::infinity();
                     for(int i=0; i<sample_size; i++ ){
                         float diff = 0;
-                        for(size_t j=0; j<win_size;j++ ){
-                            float cur = cur_samples[i+j];
-                            diff += std::isnan(cur)? 0 : std::fabs(ref_samples[j] - cur);
-                        }
+                        for(int j=0; j<win_size;j++ )
+                            diff += std::fabs(ref_samples[j] - cur_samples[i+j]);
+
                         if (diff<min_diff){
                             min_diff = diff;
-                            BEST1(p) = i;
+                            BEST1(p_id) = i;
                         }
                     }
                 }
                 '''% {'win_width': win_width }
                 ima,imb,width = np.ascontiguousarray(self.im), np.ascontiguousarray(f1.im), self.im.shape[1]
-                weave.inline(code,
-                   ['ima','imb','width','node_cnt','pb','dm','dxy','dxy_local','px','py','best' ],#
-                    support_code=scode, compiler='gcc',headers=['<algorithm>','<cmath>','<vector>'],
-                    extra_compile_args=['-std=gnu++11 -msse2 -O3'],
-                    verbose=2 )
+                weave.inline(code, ['ima','imb','width','node_cnt','pb','dm','dxy','dxy_local','px','py','best'],#
+                    support_code=scode, headers=['<algorithm>','<cmath>','<vector>','<csignal>'],
+                    compiler='gcc', extra_compile_args=['-std=gnu++11 -msse2 -O3'])
+                vm = best!=-1
             res = pb+best*dxy
             return res
 
@@ -378,43 +388,6 @@ if __name__ == "__main__":
         Range_r = Baseline*np.sin(phi1)/np.sin(c)     # Edge B = Edge C/sin(c)*sin(b)
         depth_r = ray0[2]*Range_r
         return depth_r
-#%%
-    ''' set up matching Frame'''
-    refid = 3
-    fs = []
-    seq = [refid, 4]
-    for fid in seq:
-        f = Frame(frames[fid], wGc[fid])#, Z=Zs[fid]
-        fs.append(f)
-    f0,f1 = fs[0],fs[1]
-#    match = f0.searchEPL(f1,4)
-#    d = triangulate(f0.px,f0.py,match[0],match[1], getG(f0,f1))
-#    plotxyzrgb(f0.makePC(d, 0, 5))
-
-    ''' plot all image'''
-    if 0:
-        fig = plt.figure(num='all image'); fig.clear()
-        gs = plt.GridSpec(len(seq)-1,2)
-        a =  fig.add_subplot(gs[:,0])
-        b = [fig.add_subplot(gs[sp,1]) for sp in range(len(seq)-1)]
-
-        ''' base image'''
-        fref = fs[0]
-        a.imshow(fref.im, interpolation='none')
-        a.plot(fref.px, fref.py, 'r.' )
-
-        ''' matching images'''
-        for i,sp in enumerate(b):
-            fcur = fs[i+1]
-            sp.imshow(fcur.im, interpolation='none')
-            sp.plot(fcur.px, fcur.py, 'b.', ms=2)
-#            pref = fref.ProjTo(fcur)
-#            sp.plot(pref[0], pref[1], 'r.', ms=2)
-        fig.tight_layout()
-
-
-#    pinf,pcls,dxy = calcEpl(f0.px,f0.py, getG(f0,f1))
-#    c = savgol_coeffs(5,2,pos=2,deriv=1,use='dot')
 
     def eplMatch(xr, yr, f0, f1, win_width = 3, debug=False):
         # xr, yr, win_width,debug = pref[0], pref[1],4,True
@@ -462,7 +435,45 @@ if __name__ == "__main__":
 
         pref = plt.ginput(1, timeout=-1)[0]
         best0 = eplMatch(pref[0], pref[1], f0, f1, win_width=3, debug=True)
-    test_EPLMatch()
+
+#%%
+    ''' set up matching Frame'''
+    refid = 3
+    fs = []
+    seq = [refid, 4]
+    for fid in seq:
+        f = Frame(frames[fid], wGc[fid])#, Z=Zs[fid]
+        fs.append(f)
+    f0,f1 = fs[0],fs[1]
+    match = f0.searchEPL(f1,2)
+    d = triangulate(f0.px,f0.py,match[0],match[1], getG(f0,f1))
+    plotxyzrgb(f0.makePC(d, 0, 5))
+
+    match = f1.searchEPL(f0,2)
+    d = triangulate(f1.px,f1.py,match[0],match[1], getG(f1,f0))
+    plotxyzrgb(f1.makePC(d, 0, 5))
+
+    ''' plot all image'''
+    if 1:
+        fig = plt.figure(num='all image'); fig.clear()
+        gs = plt.GridSpec(len(seq)-1,2)
+        a =  fig.add_subplot(gs[:,0])
+        b = [fig.add_subplot(gs[sp,1]) for sp in range(len(seq)-1)]
+
+        ''' base image'''
+        fref = fs[0]
+        a.imshow(fref.im, interpolation='none')
+        a.plot(fref.px, fref.py, 'r.' )
+
+        ''' matching images'''
+        for i,sp in enumerate(b):
+            fcur = fs[i+1]
+            sp.imshow(fcur.im, interpolation='none')
+            sp.plot(fcur.px, fcur.py, 'b.', ms=2)
+#            pref = fref.ProjTo(fcur)
+#            sp.plot(pref[0], pref[1], 'r.', ms=2)
+        fig.tight_layout()
+#    test_EPLMatch()
 
 #    test_calcEpl()
 
