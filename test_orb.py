@@ -221,14 +221,16 @@ if __name__ == "__main__":
     def calcEpl(xr,yr,rGc,K=K):
         ''' suppose (X, X') are the left and right image pixel pairs,
             given the relative camera pos (R,T), we have a ray X'∈R3:
-                X' = K*R*inv(K)*X + 1/Z*K*T
-                   =    Pinf[1:3] +   λ*Pe[1:3]  (λ=1/Z)
-            The projected image point will be:
+                X' = K*(R*z*inv(K)*X + T)
+                   = K*R*inv(K)*X + 1/z*K*T
+                   =    Pinf[1:3] +   λ*Pe[1:3]  (λ=1/z)
+            The projected image point x'=[a,b,1] will be:
                 x' = (Pinf[1:2] + λ*Pe[1:2])/(Pinf[3]+ λ*Pe[3]) eq.1
             but what we want is x' in this form:
                 x' =  Pinf[1:2]/Pinf[3] + λ*dxy[1:2]   eq.2
             putting eq.1 & eq.2 together and solve for dxy, we get:
                 dxy[1:2] = 1/(Pinf[3]+ λ*Pe[3]) * (-Pe[3]/Pinf[3]*Pinf[1:2] + Pe[1:2])
+            so normalize(dxy) = normalize(-Pe[3]/Pinf[3]*Pinf[1:2] + Pe[1:2])
         '''
         # xr,yr,rGc = pref[0], pref[1], getG(f0,f1)
         # xr,yr,rGc = f0.px, f0.py, getG(f0,f1)
@@ -278,7 +280,7 @@ if __name__ == "__main__":
         node_cnt = len(px)
         pb,dm,dxy,dxy_local = calcEpl(px, py, rGc)
         best = np.empty(node_cnt,'i')
-
+        cost = np.empty(node_cnt,'f')
         if 0 or debug:
             for n in xrange(node_cnt):
                 print n
@@ -300,14 +302,18 @@ if __name__ == "__main__":
                     diff = ref_samples - cur_samples[i:i+2*win_width+1]
                     err[i] = np.abs(diff).sum()
                 best[n] = np.nanargmin(err)  #np.argpartition(err, 5)
+                cost[n] = err[best[n]]
 
                 if debug:
                     f = plt.figure(num='epl match')
-                    gs = plt.GridSpec(2,2)
-                    al,ar = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
-                    ab = f.add_subplot(gs[1,:])
+                    if f.axes:
+                        al,ar,ab = tuple(f.axes)
+                    else:
+                        gs = plt.GridSpec(2,2)
+                        al,ar = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
+                        ab = f.add_subplot(gs[1,:])
+                        al.imshow(imr, interpolation='none'); ar.imshow(imc, interpolation='none')
 
-                    al.imshow(imr, interpolation='none'); ar.imshow(imc, interpolation='none')
 #                        pt = trueProj(ref_pos[0],ref_pos[1], cGr=inv(rGc), Zr=f0.Z)
 #                        ar.plot(pt[0], pt[1],'b.')
                     al.plot(ref_pos[0], ref_pos[1],'g.'); al.plot(px, py,'r.')
@@ -348,7 +354,10 @@ if __name__ == "__main__":
                 /* 1. Sampling the Intensity */
                 int sample_size = std::floor(DM1(p_id));
                 if(sample_size<1){
-                    BEST1(p_id) = -1;  continue;   // discard pixel whose epi-line length is 0
+                    BEST1(p_id) = -1;
+                    COST1(p_id) = std::numeric_limits<float>::infinity();
+                    continue;   // discard pixel whose epi-line length is 0
+
                 }
                 cur_samples.resize(sample_size+2*win_width);
                 err.resize(sample_size);
@@ -373,26 +382,32 @@ if __name__ == "__main__":
                     for(int j=0; j<win_size;j++ )
                         diff += std::fabs(ref_samples[j] - cur_samples[i+j]);
                     err[i] = diff;
-
-/*                        if (diff<min_diff){
-                        min_diff = diff;
-                        BEST1(p_id) = i;
-                    }*/
+                    #if 0
+                        if (diff<min_diff){
+                            min_diff = diff;
+                            BEST1(p_id) = i;
+                        }
+                    #endif
                 }
+                COST1(p_id) = min_diff;
                 /* 3. find the best N element */
-                auto result = std::min_element(err.begin(), err.end());
-                BEST1(p_id) = std::distance(err.begin(), result);
+                #if 1
+                    auto result = std::min_element(std::begin(err), std::end(err));
+                    BEST1(p_id) = std::distance(std::begin(err), result);
+                    COST1(p_id) = *result;
+                #endif
             }
             '''% {'win_width': win_width }
             ima,imb,width = imr, imc, imr.shape[1]
-            weave.inline(code, ['ima','imb','width','node_cnt','pb','dm','dxy','dxy_local','px','py','best'],#
+            weave.inline(code, ['ima','imb','width','node_cnt','pb','dm','dxy','dxy_local','px','py','best','cost'],#
                 support_code=scode, headers=['<algorithm>','<cmath>','<vector>','<map>','<csignal>'],
                 compiler='gcc', extra_compile_args=['-std=gnu++11 -msse2 -O3'])
+#        best[cost>0.1] = -1
         res = pb+best*dxy
-        return res
+        return res, cost
 
     def test_EPLMatch():
-        f = plt.figure(num='epl match')
+        f = plt.figure(num='epl match'); f.clear()
         gs = plt.GridSpec(2,2)
         al,ar = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
         ab = f.add_subplot(gs[1,:])
@@ -403,6 +418,74 @@ if __name__ == "__main__":
         best0 = searchEPL(pref[0], pref[1], f0.im, f1.im, getG(f0,f1), win_width=4, debug=True)
         plt.pause(0.01)
 
+
+    def searchEPLMulti(px, py, imr, imc, rGc, N=5, win_width=4, debug=False):
+        # px, py, imr, imc, rGc, N, win_width, debug = pref[0], pref[1], f0.im, f1.im, getG(f0,f1), 5, 4, True
+        px,py = np.atleast_1d(px, py)
+
+        node_cnt = len(px)
+        pb,dm,dxy,dxy_local = calcEpl(px, py, rGc)
+        best = np.full((node_cnt, N),-1, 'i')
+        cost = np.empty_like(best, 'f')
+        best_cnt = np.empty(node_cnt,'i')
+
+        for n in xrange(node_cnt):
+            print n
+            p0 = vec(px[n],py[n])
+
+            ref_pos = p0 - vec(dxy_local[:,n])*np.arange(-win_width, win_width+1) # TODO: correct the sign
+            ref_samples = sample(imr, ref_pos[0], ref_pos[1])
+
+            sam_cnt = np.floor(dm[n])
+            if sam_cnt<1:
+                best[n] = -1
+                continue
+
+            cur_pos = vec(pb[:,n]) + vec(dxy[:,n])*np.arange(-win_width, sam_cnt+win_width)
+            cur_samples = sample(imc, cur_pos[0], cur_pos[1])
+            err = np.empty(sam_cnt,'f')
+
+            for i in xrange(int(sam_cnt)):
+                diff = ref_samples - cur_samples[i:i+2*win_width+1]
+                err[i] = np.abs(diff).sum()
+            extrema_id, = scipy.signal.argrelmin(err)
+            can_cnt = np.minimum(len(extrema_id), N)
+            best_cnt[n] = can_cnt
+            best[n,:can_cnt] = extrema_id[np.argpartition(err[extrema_id], (1, can_cnt))[:can_cnt]]
+            cost[n,:can_cnt] = err[best[n,:can_cnt]]
+
+        if debug:
+            f = plt.figure(num='epl match multi')
+            if f.axes:
+                al,ar,ab = tuple(f.axes)
+            else:
+                gs = plt.GridSpec(2,2)
+                al,ar = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
+                ab = f.add_subplot(gs[1,:])
+                al.imshow(imr, interpolation='none'); ar.imshow(imc, interpolation='none')
+#                        pt = trueProj(ref_pos[0],ref_pos[1], cGr=inv(rGc), Zr=f0.Z)
+#                        ar.plot(pt[0], pt[1],'b.')
+            al.plot(ref_pos[0], ref_pos[1],'g.'); al.plot(px, py,'r.')
+            result = best[best!=-1]
+            pm = pb+result*dxy
+            ar.plot(cur_pos[0], cur_pos[1],'g.');ar.plot(pm[0],pm[1],'r*')
+            ab.plot(err)
+            ab.vlines(result,0,1)
+        return best,cost,best_cnt
+
+    def test_EPLMatchMulti():
+        f = plt.figure(num='epl match multi'); f.clear()
+        gs = plt.GridSpec(2,2)
+        al,ar = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
+        ab = f.add_subplot(gs[1,:])
+        plt.tight_layout()
+        al.imshow(f0.im, interpolation='none'); ar.imshow(f1.im, interpolation='none')
+        ar.plot(f1.px,f1.py,'b.',ms=2)
+
+        pref = plt.ginput(1, timeout=-1)[0]
+        best,cost,c_cnt = searchEPLMulti(pref[0], pref[1], f0.im, f1.im, getG(f0,f1), 5, win_width=4, debug=True)
+
+        plt.pause(0.01)
 
     def triangulate(xr,yr,xc,yc,rGc):
         Rrc,Trc = rGc[:3,:3],rGc[:3,3]
@@ -426,7 +509,7 @@ if __name__ == "__main__":
 
 #%%
     ''' set up matching Frame'''
-    refid = 0
+    refid = 2
     fs = []
     seq = [refid, 3]
     for fid in seq:
@@ -438,7 +521,7 @@ if __name__ == "__main__":
     f1,f0 = fs[0],fs[1]
 
     ''' plot all image'''
-    if 1:
+    if 0:
         fig = plt.figure(num='all image'); fig.clear()
         gs = plt.GridSpec(len(seq)-1,2)
         a =  fig.add_subplot(gs[:,0])
@@ -463,16 +546,16 @@ if __name__ == "__main__":
         test_EPLMatch()
 
     if 1:
-        match = f0.searchEPL(f1, 4)
+        match,err = f0.searchEPL(f1, 3)
         d = triangulate(f0.px,f0.py,match[0],match[1], getG(f0,f1))
         plotxyzrgb(f0.makePC(d, 0, 5))
 
-#    d[conditions(d>10,d<1)] = np.nan
-#    d_result = np.full_like(f0.im, np.nan,'f')
-#    d_result[f0.py, f0.px] = d
-#    df = scipy.ndimage.filters.generic_filter(d_result, np.nanmedian, size=5)
-
-#    plotxyzrgb(f0.makePC(df[f0.py, f0.px], 0, 5))
+        if 0:
+            d[conditions(d>10,d<1)] = np.nan
+            d_result = np.full_like(f0.im, np.nan,'f')
+            d_result[f0.py, f0.px] = d
+            df = scipy.ndimage.filters.generic_filter(d_result, np.nanmedian, size=15)
+            plotxyzrgb(f0.makePC(df[f0.py, f0.px], 0, 5))
 
 
 
