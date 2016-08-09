@@ -52,7 +52,7 @@ def relPos(wG0, wG1):
     return np.dot(np.linalg.inv(wG0), wG1)
 
 def transform(G,P):
-    ''' Pr:3xN   Pr = rGc*Pc'''
+    ''' Pr[3,N]   Pr = rGc*Pc'''
     return G[:3,:3].dot(P)+G[:3,3][:,np.newaxis]
 
 def conditions(*args):
@@ -80,12 +80,15 @@ def timing(f):
     return wrap
 
 if __name__ == "__main__":
-#    frames, wGc, K, Zs = loaddata1()
-    frames, wGc, K = loaddata2()
+    frames, wGc, K, Zs = loaddata1()
+#    frames, wGc, K = loaddata2()
     h,w = frames[0].shape[:2]
     fx,fy,cx,cy = K[0,0],K[1,1],K[0,2],K[1,2]
 
-#%%
+    def projective(x, y):
+        x,y = np.atleast_1d(x,y)   # scalar to array
+        return np.vstack([x.ravel(), y.ravel(), np.ones_like(x)])
+
     def backproject(x, y, K=K):
         ''' return 3xN backprojected points array, x,y,z = p[0],p[1],p[2]'''
         fx,fy,cx,cy = K[0,0],K[1,1],K[0,2],K[1,2]
@@ -210,6 +213,7 @@ if __name__ == "__main__":
             return P[vm_ind,:]      # Nx6
 
     def getG(f0,f1):
+        '''return 1G0, which p1 = 1G0 * p0  '''
         return np.dot(inv(f0.wGc), f1.wGc)
 
     def calcF(rGc, K=K):
@@ -230,19 +234,26 @@ if __name__ == "__main__":
                 x' =  Pinf[1:2]/Pinf[3] + λ*dxy[1:2]   eq.2
             putting eq.1 & eq.2 together and solve for dxy, we get:
                 dxy[1:2] = 1/(Pinf[3]+ λ*Pe[3]) * (-Pe[3]/Pinf[3]*Pinf[1:2] + Pe[1:2])
-            so normalize(dxy) = normalize(-Pe[3]/Pinf[3]*Pinf[1:2] + Pe[1:2])
+            so normalize(dxy) = normalize(-Pe[3]/Pinf[3]*Pinf[1:2] + Pe[1:2]),  if (Pinf[3]+ λ*Pe[3])>0,
+                              = -normalize(-Pe[3]/Pinf[3]*Pinf[1:2] + Pe[1:2]), otherwise.
+            for (Pinf[3]+ λ*Pe[3])>0 ,we have:
+                λ > 0 > -Pinf[3]/Pe[3],  if Pe[3]>0;
+                -Pinf[3]/Pe[3] > λ > 0,  otherwise
         '''
         # xr,yr,rGc = pref[0], pref[1], getG(f0,f1)
         # xr,yr,rGc = f0.px, f0.py, getG(f0,f1)
         xr,yr = np.atleast_1d(xr,yr)
-        cGr = inv(rGc)
-        Rcr,Tcr = cGr[:3,:3],cGr[:3,3]
+
         Rrc,Trc = rGc[:3,:3],rGc[:3,3]
-        Pr = backproject(xr, yr, K)     # 3xN
+        Rcr,Tcr = Rrc.T, -Rrc.T.dot(Trc)
+
+        Pr = projective(xr, yr)     # 3xN
         Pe0 = vec(K.dot(Trc))           # 3x1
+#        l = np.cross(Pr.T, Pe0.T)
+#        l /= np.sqrt(l[0]**2 + l[1]**2)
         dxy_local = normalize(-Pe0[2]/Pr[2]*Pr[:2]+Pe0[:2])  # 2xN
 
-        Pinf = K.dot(Rcr.dot(Pr))  # <= projection of points at infinity
+        Pinf = K.dot(Rcr.dot(backproject(xr,yr)))  # <= projection of points at infinity
         Pe1 = vec(K.dot(Tcr))
         dxy = normalize(-Pe1[2]/Pinf[2]*Pinf[:2]+Pe1[:2])   # 2xN
 
@@ -286,7 +297,7 @@ if __name__ == "__main__":
                 print n
                 p0 = vec(px[n],py[n])
 
-                ref_pos = p0 - vec(dxy_local[:,n])*np.arange(-win_width, win_width+1) # TODO: correct the sign
+                ref_pos = p0 - vec(dxy_local[:,n])*np.arange(-win_width, win_width+1) # TODO: why minus?
                 ref_samples = sample(imr, ref_pos[0], ref_pos[1])
 
                 sam_cnt = np.floor(dm[n])
@@ -300,11 +311,12 @@ if __name__ == "__main__":
 
                 for i in xrange(int(sam_cnt)):
                     diff = ref_samples - cur_samples[i:i+2*win_width+1]
-                    err[i] = np.abs(diff).sum()
+                    err[i] = (diff*diff).sum()
                 best[n] = np.nanargmin(err)  #np.argpartition(err, 5)
                 cost[n] = err[best[n]]
 
                 if debug:
+                    ''' obtain or create plotting handle'''
                     f = plt.figure(num='epl match')
                     if f.axes:
                         al,ar,ab = tuple(f.axes)
@@ -313,15 +325,17 @@ if __name__ == "__main__":
                         al,ar = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
                         ab = f.add_subplot(gs[1,:])
                         al.imshow(imr, interpolation='none'); ar.imshow(imc, interpolation='none')
-
-#                        pt = trueProj(ref_pos[0],ref_pos[1], cGr=inv(rGc), Zr=f0.Z)
-#                        ar.plot(pt[0], pt[1],'b.')
+                    ''' '''
                     al.plot(ref_pos[0], ref_pos[1],'g.'); al.plot(px, py,'r.')
                     pm = pb+best*dxy
-                    ar.plot(cur_pos[0], cur_pos[1],'g.');ar.plot(pm[0],pm[1],'r*')
+                    ar.plot(cur_pos[0], cur_pos[1],'g.');ar.plot(pm[0],pm[1],'r*');
                     ab.plot(err)
                     ab.vlines(best,0,1)
 
+                    if not f0.Z is None:
+                        pt = trueProj(ref_pos[0],ref_pos[1], cGr=inv(rGc), Zr=f0.Z)
+                        ar.plot(pt[0], pt[1],'b.')
+                        ab.vlines((pt[0][win_width]-pb[0])/dxy[0],0,1,'g')
         else:
             scode = r'''
             inline float sample(const float* const mat, const int width, const float x, const float y)
@@ -379,8 +393,12 @@ if __name__ == "__main__":
                     // continue;
 
                     float diff = 0;
-                    for(int j=0; j<win_size;j++ )
-                        diff += std::fabs(ref_samples[j] - cur_samples[i+j]);
+                    for(int j=0; j<win_size;j++ ){
+                        float err = ref_samples[j] - cur_samples[i+j];
+                        diff += err*err;
+                    }
+
+
                     err[i] = diff;
                     #if 0
                         if (diff<min_diff){
@@ -416,18 +434,20 @@ if __name__ == "__main__":
 
         pref = plt.ginput(1, timeout=-1)[0]
         best0 = searchEPL(pref[0], pref[1], f0.im, f1.im, getG(f0,f1), win_width=4, debug=True)
+        ar.plot(f1.px,f1.py,'b.',ms=2)
         plt.pause(0.01)
 
 
     def searchEPLMulti(px, py, imr, imc, rGc, N=5, win_width=4, debug=False):
         # px, py, imr, imc, rGc, N, win_width, debug = pref[0], pref[1], f0.im, f1.im, getG(f0,f1), 5, 4, True
+        # px, py, imr, imc, rGc, N, win_width, debug = f0.px, f0.py, f0.im, f1.im, getG(f0,f1), 5, 4, False
         px,py = np.atleast_1d(px, py)
 
         node_cnt = len(px)
         pb,dm,dxy,dxy_local = calcEpl(px, py, rGc)
         best = np.full((node_cnt, N),-1, 'i')
         cost = np.empty_like(best, 'f')
-        best_cnt = np.empty(node_cnt,'i')
+        best_cnt = np.zeros(node_cnt,'i')
 
         for n in xrange(node_cnt):
             print n
@@ -447,11 +467,12 @@ if __name__ == "__main__":
 
             for i in xrange(int(sam_cnt)):
                 diff = ref_samples - cur_samples[i:i+2*win_width+1]
-                err[i] = np.abs(diff).sum()
+                err[i] = (diff*diff).sum()
             extrema_id, = scipy.signal.argrelmin(err)
+            extrema_id = extrema_id[np.argsort(err[extrema_id])]
             can_cnt = np.minimum(len(extrema_id), N)
             best_cnt[n] = can_cnt
-            best[n,:can_cnt] = extrema_id[np.argpartition(err[extrema_id], (1, can_cnt))[:can_cnt]]
+            best[n,:can_cnt] = extrema_id[:can_cnt]
             cost[n,:can_cnt] = err[best[n,:can_cnt]]
 
         if debug:
@@ -509,9 +530,9 @@ if __name__ == "__main__":
 
 #%%
     ''' set up matching Frame'''
-    refid = 2
+    refid = 0
     fs = []
-    seq = [refid, 3]
+    seq = [refid, 9]
     for fid in seq:
         try:
             f = Frame(frames[fid], wGc[fid],Z=Zs[fid])
@@ -549,7 +570,13 @@ if __name__ == "__main__":
         match,err = f0.searchEPL(f1, 3)
         d = triangulate(f0.px,f0.py,match[0],match[1], getG(f0,f1))
         plotxyzrgb(f0.makePC(d, 0, 5))
+        if not f0.Z is None and 0:
+            dt = f0.Z[f0.py,f0.px]
+            plotxyzrgb(f0.makePC(dt, 0, 5),hold=True)
+            err = np.abs(dt-d)
 
+
+        '''filtering'''
         if 0:
             d[conditions(d>10,d<1)] = np.nan
             d_result = np.full_like(f0.im, np.nan,'f')
@@ -557,6 +584,15 @@ if __name__ == "__main__":
             df = scipy.ndimage.filters.generic_filter(d_result, np.nanmedian, size=15)
             plotxyzrgb(f0.makePC(df[f0.py, f0.px], 0, 5))
 
-
-
-
+    if 0:
+        best,cost,best_cnt = searchEPLMulti(f0.px, f0.py, f0.im, f1.im, getG(f0,f1))
+        for it in range(1,7):
+            if np.mod(it,2):
+                p_seq = xrange(f0.p_cnt)
+                nbrs = f0.nbrs[0]
+            else:
+                p_seq = reversed(xrange(f0.p_cnt))
+                nbrs = f0.nbrs[1]
+            for p_id in p_seq:
+                for nbr_id in nbrs[i]:
+                    pass
