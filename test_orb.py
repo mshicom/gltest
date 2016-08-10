@@ -75,7 +75,7 @@ def timing(f):
         ts = time()
         result = f(*args, **kw)
         te = time()
-        print 'func:%r took: %2.4f sec' % (f.__name__, te-ts)
+        print 'func:%r took: %2.6f sec' % (f.__name__, te-ts)
         return result
     return wrap
 
@@ -224,14 +224,14 @@ if __name__ == "__main__":
 
     def calcEpl(xr,yr,rGc,K=K):
         ''' suppose (X, X') are the left and right image pixel pairs,
-            given the relative camera pos (R,T), we have a ray X'∈R3:
-                X' = K*(R*z*inv(K)*X + T)
+            given the relative camera pos (R,T), X'=(R,T).dot(X), we have a ray X'∈R3:
+                X' = K*(R*inv(K)*X*z + T)
                    = K*R*inv(K)*X + 1/z*K*T
                    =    Pinf[1:3] +   λ*Pe[1:3]  (λ=1/z)
             The projected image point x'=[a,b,1] will be:
-                x' = (Pinf[1:2] + λ*Pe[1:2])/(Pinf[3]+ λ*Pe[3]) eq.1
+                x' = (Pinf[1:2] + λ*Pe[1:2])/(Pinf[3]+ λ*Pe[3]) (eq.1)
             but what we want is x' in this form:
-                x' =  Pinf[1:2]/Pinf[3] + λ*dxy[1:2]   eq.2
+                x' =  Pinf[1:2]/Pinf[3] + λ*dxy[1:2]   (eq.2)
             putting eq.1 & eq.2 together and solve for dxy, we get:
                 dxy[1:2] = 1/(Pinf[3]+ λ*Pe[3]) * (-Pe[3]/Pinf[3]*Pinf[1:2] + Pe[1:2])
             so normalize(dxy) = normalize(-Pe[3]/Pinf[3]*Pinf[1:2] + Pe[1:2]),  if (Pinf[3]+ λ*Pe[3])>0,
@@ -239,6 +239,7 @@ if __name__ == "__main__":
             for (Pinf[3]+ λ*Pe[3])>0 ,we have:
                 λ > 0 > -Pinf[3]/Pe[3],  if Pe[3]>0;
                 -Pinf[3]/Pe[3] > λ > 0,  otherwise
+
         '''
         # xr,yr,rGc = pref[0], pref[1], getG(f0,f1)
         # xr,yr,rGc = f0.px, f0.py, getG(f0,f1)
@@ -249,11 +250,10 @@ if __name__ == "__main__":
 
         Pr = projective(xr, yr)     # 3xN
         Pe0 = vec(K.dot(Trc))           # 3x1
-#        l = np.cross(Pr.T, Pe0.T)
-#        l /= np.sqrt(l[0]**2 + l[1]**2)
         dxy_local = normalize(-Pe0[2]/Pr[2]*Pr[:2]+Pe0[:2])  # 2xN
 
-        Pinf = K.dot(Rcr.dot(backproject(xr,yr)))  # <= projection of points at infinity
+        H = K.dot(Rcr.dot(inv(K)))
+        Pinf = H.dot(Pr)  # <= projection of points at infinity, Pinf=K.dot(Rcr.dot(backproject(xr, yr))
         Pe1 = vec(K.dot(Tcr))
         dxy = normalize(-Pe1[2]/Pinf[2]*Pinf[:2]+Pe1[:2])   # 2xN
 
@@ -262,6 +262,20 @@ if __name__ == "__main__":
         dinv_max = np.minimum(x_limit, y_limit)             # N
 
         return Pinf[:2]/Pinf[2], dinv_max, dxy, dxy_local
+
+    def calcInvDepth(xr,yr,xc,yc,cGr,K=K):
+        '''Once we have x'[1:2], puting it in eq.1 and solve for λ, we get:
+                λ = (Pinf[1:2] - Pinf[3]*x'[1:2])/(Pe[3]*x'[1:2]-Pe[1:2])
+        '''
+        # xr,yr,cGr,(xc,yc) = f0.px, f0.py, getG(f1,f0),trueProj(f0.px, f0.py, getG(f1,f0), Zr=f0.Z)
+        xr,yr,xc,yc = np.atleast_1d(xr,yr,xc,yc)
+        Rcr,Tcr = cGr[:3,:3],cGr[:3,3]
+
+        H = K.dot(Rcr.dot(inv(K)))
+        Pinf = H.dot(projective(xr, yr))  # Pinf=K.dot(Rcr.dot(backproject(xr, yr))
+        Pe = vec(K.dot(Tcr))
+        dinv = (Pinf[0] - Pinf[2]*xc)/(Pe[2]*xc-Pe[0])     # or (Pinf[1] - Pinf[2]*yc)/(Pe[2]*yc-Pe[0])
+        return dinv
 
     def test_calcEpl():
         f,a = plt.subplots(1, 1, num='test_F')
@@ -274,7 +288,6 @@ if __name__ == "__main__":
         Z = np.linspace(0.1, 5.0, 40)
         pcur = K.dot(transform(cGr, backproject(pref[0], pref[1])*Z))
         pcur /= pcur[2]
-#            pcur = trueProj(pref[0], pref[1], cGr=cGr, Zr=f0.Z)
         a.plot(pcur[0]+640, pcur[1],'b.')
 
         pb,dmax,dxy,dxy_local = calcEpl(pref[0], pref[1], inv(cGr))
@@ -282,6 +295,13 @@ if __name__ == "__main__":
         a.plot([pb[0]+640,pe[0]+640], [pb[1],pe[1]],'g-')
 #        a.plot([pcur[0], pcur[0]+100*dxy_local[0]], [pcur[1],pcur[1]+100*dxy_local[1]],'b-')
         plt.pause(0.01)
+
+    def test_calcInvDepth():
+        cGr = getG(f1,f0)
+        tx,ty = trueProj(f0.px, f0.py, cGr, Zr=f0.Z)
+        td = sample(f0.Z, f0.px, f0.py)
+        d = 1.0/calcInvDepth(f0.px, f0.py,tx,ty,cGr)
+        print np.allclose(td, d)
 
     @timing
     def searchEPL(px, py, imr, imc, rGc, win_width=4, debug=False):
@@ -397,8 +417,6 @@ if __name__ == "__main__":
                         float err = ref_samples[j] - cur_samples[i+j];
                         diff += err*err;
                     }
-
-
                     err[i] = diff;
                     #if 0
                         if (diff<min_diff){
@@ -566,7 +584,7 @@ if __name__ == "__main__":
         test_calcEpl()
         test_EPLMatch()
 
-    if 1:
+    if 0:
         match,err = f0.searchEPL(f1, 3)
         d = triangulate(f0.px,f0.py,match[0],match[1], getG(f0,f1))
         plotxyzrgb(f0.makePC(d, 0, 5))
@@ -574,7 +592,6 @@ if __name__ == "__main__":
             dt = f0.Z[f0.py,f0.px]
             plotxyzrgb(f0.makePC(dt, 0, 5),hold=True)
             err = np.abs(dt-d)
-
 
         '''filtering'''
         if 0:
@@ -596,3 +613,90 @@ if __name__ == "__main__":
             for p_id in p_seq:
                 for nbr_id in nbrs[i]:
                     pass
+
+
+
+#%%
+    @timing
+    def dt(f, q=None, p=None):
+        f = f.astype('f').copy()
+        n = f.shape[0]
+
+        q = q.astype('f').copy() if not q is None else np.arange(n, dtype='f')
+        p = p.astype('f').copy() if not p is None else np.arange(n, dtype='f')
+        m = p.shape[0]
+        d = np.empty(m,'f')
+        d_arg = np.empty(m,'i')
+
+        if 0:
+            v_id = np.zeros((n+1),'i')
+            z = np.full((n+1),np.inf,'f')
+            z[0] = -np.inf
+            k = 0
+            square = lambda x:x*x
+            for q_id in range(1,n):
+                s = ( (f[q_id]+square(q[q_id]))-(f[v_id[k]]+square(q[v_id[k]])) )/(2*q[q_id]-2*q[v_id[k]])
+                while (s <= z[k]):
+                    k -= 1
+                    s = ( (f[q_id]+square(q[q_id]))-(f[v_id[k]]+square(q[v_id[k]])) )/(2*q[q_id]-2*q[v_id[k]])
+                k += 1
+                v_id[k] = q_id
+                z[k] = s
+
+            k = 0
+            for p_id in nditer(np.argsort(p)):
+                while z[k+1] < p[p_id]:
+                    k += 1
+                d[p_id] = square(p[p_id]-q[v_id[k]]) + f[v_id[k]]
+                d_arg[p_id] = v_id[k]
+        else:
+            scode = r'''
+                template <class T>
+                    inline T square(const T &x) { return x*x; };
+
+                #define INF std::numeric_limits<float>::infinity()
+                void dt(float *f, float *p, int n,
+                        float *q, int m,
+                        float *d, int *d_arg)
+                {
+                    int *v_id = new int[n+1];
+                    float *z = new float[n+1];
+                    int k = 0;
+                    v_id[0] = 0;
+                    z[0] = -INF;
+                    z[1] = +INF;
+                    for (int q_id = 1; q_id <= n-1; q_id++) {
+                        float s = 0.5*((f[q_id]+square(q[q_id]))-(f[v_id[k]]+square(q[v_id[k]])))/(q[q_id]-q[v_id[k]]);
+                        while (s <= z[k]) {
+                            k--;
+                            s = 0.5*((f[q_id]+square(q[q_id]))-(f[v_id[k]]+square(q[v_id[k]])))/(q[q_id]-q[v_id[k]]);
+                        }
+                        k++;
+                        v_id[k] = q_id;
+                        z[k] = s;
+                        z[k+1] = +INF;
+                    }
+                    k = 0;
+                    for (int p_id = 0; p_id <= m-1; p_id++) {
+                        while (z[k+1] < p[p_id])
+                            k++;
+                        d[p_id] = square(p[p_id]-q[v_id[k]]) + f[v_id[k]];
+                        d_arg[p_id] = v_id[k];
+                    }
+
+                    delete [] v_id;
+                    delete [] z;
+                }'''
+            code = r'''
+              //std::raise(SIGINT);
+              dt(&F1(0), &P1(0), n,
+                 &Q1(0), m,
+                 &D1(0), &D_ARG1(0));
+             dt(f,p,n,q,m,d,d_arg);
+            '''
+            weave.inline(code,['d','d_arg','f','n','m','p','q'],
+                         support_code=scode, headers=['<algorithm>','<cmath>','<vector>','<stdio.h>','<csignal>'],
+                         compiler='gcc', extra_compile_args=['-std=gnu++11 -msse2 -O3'])
+        return d,d_arg
+    def test_dt():
+       cost,best_id = dt(np.arange(10,0,-1),np.arange(10), np.arange(3)*3)
