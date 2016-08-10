@@ -65,6 +65,9 @@ def normalize(P):
 def vec(*arg):
     return np.reshape(arg,(-1,1))
 
+def iD(depth):
+    return 1.0/depth
+
 inv = np.linalg.inv
 
 from functools import wraps
@@ -126,8 +129,7 @@ if __name__ == "__main__":
         def __init__(self, img, wGc=np.eye(4), Z=None, gthreshold=None):
             self.im = np.ascontiguousarray(img.astype('f')/255.0)
             self.wGc = wGc.copy()
-            if not Z is None:
-                self.Z = Z.copy()
+            self.Z = Z
 
             '''extract sailent points'''
             self.extractPts(gthreshold)
@@ -201,9 +203,9 @@ if __name__ == "__main__":
             P1 = K.dot(G[0:3,0:3].dot(P0)+G[0:3,3][:,np.newaxis])
             return P1[:2]/P1[2]
 
-        def searchEPL(self, f1, win_width=4):
+        def searchEPL(self, f1, rmin=None,rmax=None,win_width=4):
             rGc = relPos(self.wGc, f1.wGc)
-            return searchEPL(self.px, self.py, self.im, f1.im, rGc, win_width)
+            return searchEPL(self.px, self.py, self.im, f1.im, rGc, rmin, rmax, win_width)
 
         def makePC(self, depth, vmin=0, vmax=10):
             vm_ind, = np.where(conditions(depth>vmin,  depth<vmax))
@@ -222,24 +224,23 @@ if __name__ == "__main__":
         rFc = inv(K.T).dot(skew(t)).dot(R).dot(inv(K))
         return rFc
 
-    def calcEpl(xr,yr,rGc,K=K):
+    def calcEpl(xr,yr,rGc,rmin=None,rmax=None,K=K):
         ''' suppose (X, X') are the left and right image pixel pairs,
             given the relative camera pos (R,T), X'=(R,T).dot(X), we have a ray X'∈R3:
                 X' = K*(R*inv(K)*X*z + T)
                    = K*R*inv(K)*X + 1/z*K*T
                    =    Pinf[1:3] +   λ*Pe[1:3]  (λ=1/z)
-            The projected image point x'=[a,b,1] will be:
+            The projected image point x'=[a,b,1] of X' will be:
                 x' = (Pinf[1:2] + λ*Pe[1:2])/(Pinf[3]+ λ*Pe[3]) (eq.1)
             but what we want is x' in this form:
                 x' =  Pinf[1:2]/Pinf[3] + λ*dxy[1:2]   (eq.2)
             putting eq.1 & eq.2 together and solve for dxy, we get:
-                dxy[1:2] = 1/(Pinf[3]+ λ*Pe[3]) * (-Pe[3]/Pinf[3]*Pinf[1:2] + Pe[1:2])
+                dxy[1:2] = 1/(Pinf[3]+ λ*Pe[3]) * (-Pe[3]/Pinf[3]*Pinf[1:2] + Pe[1:2])   (eq.3)
             so normalize(dxy) = normalize(-Pe[3]/Pinf[3]*Pinf[1:2] + Pe[1:2]),  if (Pinf[3]+ λ*Pe[3])>0,
                               = -normalize(-Pe[3]/Pinf[3]*Pinf[1:2] + Pe[1:2]), otherwise.
             for (Pinf[3]+ λ*Pe[3])>0 ,we have:
                 λ > 0 > -Pinf[3]/Pe[3],  if Pe[3]>0;
                 -Pinf[3]/Pe[3] > λ > 0,  otherwise
-
         '''
         # xr,yr,rGc = pref[0], pref[1], getG(f0,f1)
         # xr,yr,rGc = f0.px, f0.py, getG(f0,f1)
@@ -261,7 +262,19 @@ if __name__ == "__main__":
         y_limit = np.maximum(-Pinf[1]/dxy[1], (h-Pinf[1])/dxy[1])   # Pinf.y + y_limit*dy = {0,h}
         dinv_max = np.minimum(x_limit, y_limit)             # N
 
-        return Pinf[:2]/Pinf[2], dinv_max, dxy, dxy_local
+        if not rmin is None:
+            dx_min = (-Pe1[2]/Pinf[2]*Pinf[0] + Pe1[0])/(Pinf[2]/rmin + Pe1[2])    # from eq.3
+            vmin = dx_min/dxy[0]
+        else:
+            vmin = np.zeros_like(xr)
+
+        if not rmax is None:
+            dx_max = (-Pe1[2]/Pinf[2]*Pinf[0] + Pe1[0])/(Pinf[2]/rmax + Pe1[2])
+            vmax = np.minimum(dx_max/dxy[0], dinv_max)
+        else:
+            vmax = dinv_max
+
+        return Pinf[:2]/Pinf[2], dxy, vmax, vmin, dxy_local
 
     def calcInvDepth(xr,yr,xc,yc,cGr,K=K):
         '''Once we have x'[1:2], puting it in eq.1 and solve for λ, we get:
@@ -285,14 +298,15 @@ if __name__ == "__main__":
         a.plot(pref[0], pref[1],'r.')
 
         cGr = relPos(f1.wGc, f0.wGc)
-        Z = np.linspace(0.1, 5.0, 40)
+        Z = np.linspace(0.5, 10.0, 40)
         pcur = K.dot(transform(cGr, backproject(pref[0], pref[1])*Z))
         pcur /= pcur[2]
         a.plot(pcur[0]+640, pcur[1],'b.')
 
-        pb,dmax,dxy,dxy_local = calcEpl(pref[0], pref[1], inv(cGr))
-        pe = pb+dmax*dxy
-        a.plot([pb[0]+640,pe[0]+640], [pb[1],pe[1]],'g-')
+        pb,dxy,dmax,dmin,dxy_local = calcEpl(pref[0], pref[1], inv(cGr),rmin=iD(10),rmax=iD(0.5)) #
+        pmax = pb+dmax*dxy
+        pmin = pb+dmin*dxy
+        a.plot([pmin[0]+640,pmax[0]+640], [pmin[1],pmax[1]],'g-')
 #        a.plot([pcur[0], pcur[0]+100*dxy_local[0]], [pcur[1],pcur[1]+100*dxy_local[1]],'b-')
         plt.pause(0.01)
 
@@ -304,12 +318,12 @@ if __name__ == "__main__":
         print np.allclose(td, d)
 
     @timing
-    def searchEPL(px, py, imr, imc, rGc, win_width=4, debug=False):
+    def searchEPL(px, py, imr, imc, rGc, rmin=None,rmax=None,win_width=4, debug=False):
         # px, py, imr, imc, rGc, win_width, debug = pref[0], pref[1], f0.im, f1.im, getG(f0,f1), 4, True
         px,py = np.atleast_1d(px, py)
 
         node_cnt = len(px)
-        pb,dm,dxy,dxy_local = calcEpl(px, py, rGc)
+        pb,dxy,dmax,dmin,dxy_local = calcEpl(px, py, rGc,rmin,rmax)
         best = np.empty(node_cnt,'i')
         cost = np.empty(node_cnt,'f')
         if 0 or debug:
@@ -320,20 +334,22 @@ if __name__ == "__main__":
                 ref_pos = p0 - vec(dxy_local[:,n])*np.arange(-win_width, win_width+1) # TODO: why minus?
                 ref_samples = sample(imr, ref_pos[0], ref_pos[1])
 
-                sam_cnt = np.floor(dm[n])
+                sam_min,sam_max = np.floor(dmin[n]),np.ceil(dmax[n])
+                sam_cnt = int(sam_max-sam_min)+1
                 if sam_cnt<1:
                     best[n] = -1
                     continue
 
-                cur_pos = vec(pb[:,n]) + vec(dxy[:,n])*np.arange(-win_width, sam_cnt+win_width)
+                cur_pos = vec(pb[:,n]) + vec(dxy[:,n])*np.arange(sam_min-win_width, sam_max+win_width+1)
                 cur_samples = sample(imc, cur_pos[0], cur_pos[1])
                 err = np.empty(sam_cnt,'f')
 
-                for i in xrange(int(sam_cnt)):
+                for i in xrange(sam_cnt):
                     diff = ref_samples - cur_samples[i:i+2*win_width+1]
                     err[i] = (diff*diff).sum()
-                best[n] = np.nanargmin(err)  #np.argpartition(err, 5)
-                cost[n] = err[best[n]]
+                mininum = np.nanargmin(err)
+                best[n] = sam_min+mininum  #np.argpartition(err, 5)
+                cost[n] = err[mininum]
 
                 if debug:
                     ''' obtain or create plotting handle'''
@@ -350,12 +366,12 @@ if __name__ == "__main__":
                     pm = pb+best*dxy
                     ar.plot(cur_pos[0], cur_pos[1],'g.');ar.plot(pm[0],pm[1],'r*');
                     ab.plot(err)
-                    ab.vlines(best,0,1)
+                    ab.vlines(mininum,0,1)
 
                     if not f0.Z is None:
                         pt = trueProj(ref_pos[0],ref_pos[1], cGr=inv(rGc), Zr=f0.Z)
                         ar.plot(pt[0], pt[1],'b.')
-                        ab.vlines((pt[0][win_width]-pb[0])/dxy[0],0,1,'g')
+                        ab.vlines((pt[0][win_width]-pb[0])/dxy[0]-sam_min,0,1,'g')
         else:
             scode = r'''
             inline float sample(const float* const mat, const int width, const float x, const float y)
@@ -376,7 +392,7 @@ if __name__ == "__main__":
             size_t M = node_cnt;
             const int win_width = %(win_width)d;
             const int win_size = 2*win_width+1;
-            std::vector<float> ref_samples(2*win_width+1);
+            std::vector<float> ref_samples(win_size);
             std::vector<float> cur_samples(1000);
             std::vector<float> err(1000);
 
@@ -386,7 +402,9 @@ if __name__ == "__main__":
             for(size_t p_id=0; p_id<M; p_id++){
 
                 /* 1. Sampling the Intensity */
-                int sample_size = std::floor(DM1(p_id));
+                int sam_min = std::floor(DMIN1(p_id));
+                int sam_max = std::ceil(DMAX1(p_id));
+                int sample_size = sam_max-sam_min+1;
                 if(sample_size<1){
                     BEST1(p_id) = -1;
                     COST1(p_id) = std::numeric_limits<float>::infinity();
@@ -397,8 +415,8 @@ if __name__ == "__main__":
                 err.resize(sample_size);
                 for(int i=0; i<sample_size+2*win_width; i++)
                     cur_samples[i] = sample(imb, width,
-                                            PB2(0,p_id)+(i-win_width)*DXY2(0,p_id),
-                                            PB2(1,p_id)+(i-win_width)*DXY2(1,p_id));
+                                            PB2(0,p_id)+(sam_min+i-win_width)*DXY2(0,p_id),
+                                            PB2(1,p_id)+(sam_min+i-win_width)*DXY2(1,p_id));
 
                 for(int pos=0; pos<win_size; pos++)
                     ref_samples[pos] = sample(ima,width,
@@ -421,21 +439,22 @@ if __name__ == "__main__":
                     #if 0
                         if (diff<min_diff){
                             min_diff = diff;
-                            BEST1(p_id) = i;
+                            BEST1(p_id) =i;
                         }
                     #endif
                 }
-                COST1(p_id) = min_diff;
+                //COST1(p_id) = min_diff;
+                //BEST1(p_id) += sam_min;
                 /* 3. find the best N element */
                 #if 1
                     auto result = std::min_element(std::begin(err), std::end(err));
-                    BEST1(p_id) = std::distance(std::begin(err), result);
+                    BEST1(p_id) = sam_min + std::distance(std::begin(err), result);
                     COST1(p_id) = *result;
                 #endif
             }
             '''% {'win_width': win_width }
             ima,imb,width = imr, imc, imr.shape[1]
-            weave.inline(code, ['ima','imb','width','node_cnt','pb','dm','dxy','dxy_local','px','py','best','cost'],#
+            weave.inline(code, ['ima','imb','width','node_cnt','pb','dmax','dmin','dxy','dxy_local','px','py','best','cost'],#
                 support_code=scode, headers=['<algorithm>','<cmath>','<vector>','<map>','<csignal>'],
                 compiler='gcc', extra_compile_args=['-std=gnu++11 -msse2 -O3'])
 #        best[cost>0.1] = -1
@@ -451,80 +470,10 @@ if __name__ == "__main__":
         al.imshow(f0.im, interpolation='none'); ar.imshow(f1.im, interpolation='none')
 
         pref = plt.ginput(1, timeout=-1)[0]
-        best0 = searchEPL(pref[0], pref[1], f0.im, f1.im, getG(f0,f1), win_width=4, debug=True)
-        ar.plot(f1.px,f1.py,'b.',ms=2)
+        best0 = searchEPL(pref[0], pref[1], f0.im, f1.im, getG(f0,f1), iD(10),iD(2), win_width=4, debug=True)
+#        ar.plot(f1.px,f1.py,'b.',ms=2)
         plt.pause(0.01)
 
-
-    def searchEPLMulti(px, py, imr, imc, rGc, N=5, win_width=4, debug=False):
-        # px, py, imr, imc, rGc, N, win_width, debug = pref[0], pref[1], f0.im, f1.im, getG(f0,f1), 5, 4, True
-        # px, py, imr, imc, rGc, N, win_width, debug = f0.px, f0.py, f0.im, f1.im, getG(f0,f1), 5, 4, False
-        px,py = np.atleast_1d(px, py)
-
-        node_cnt = len(px)
-        pb,dm,dxy,dxy_local = calcEpl(px, py, rGc)
-        best = np.full((node_cnt, N),-1, 'i')
-        cost = np.empty_like(best, 'f')
-        best_cnt = np.zeros(node_cnt,'i')
-
-        for n in xrange(node_cnt):
-            print n
-            p0 = vec(px[n],py[n])
-
-            ref_pos = p0 - vec(dxy_local[:,n])*np.arange(-win_width, win_width+1) # TODO: correct the sign
-            ref_samples = sample(imr, ref_pos[0], ref_pos[1])
-
-            sam_cnt = np.floor(dm[n])
-            if sam_cnt<1:
-                best[n] = -1
-                continue
-
-            cur_pos = vec(pb[:,n]) + vec(dxy[:,n])*np.arange(-win_width, sam_cnt+win_width)
-            cur_samples = sample(imc, cur_pos[0], cur_pos[1])
-            err = np.empty(sam_cnt,'f')
-
-            for i in xrange(int(sam_cnt)):
-                diff = ref_samples - cur_samples[i:i+2*win_width+1]
-                err[i] = (diff*diff).sum()
-            extrema_id, = scipy.signal.argrelmin(err)
-            extrema_id = extrema_id[np.argsort(err[extrema_id])]
-            can_cnt = np.minimum(len(extrema_id), N)
-            best_cnt[n] = can_cnt
-            best[n,:can_cnt] = extrema_id[:can_cnt]
-            cost[n,:can_cnt] = err[best[n,:can_cnt]]
-
-        if debug:
-            f = plt.figure(num='epl match multi')
-            if f.axes:
-                al,ar,ab = tuple(f.axes)
-            else:
-                gs = plt.GridSpec(2,2)
-                al,ar = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
-                ab = f.add_subplot(gs[1,:])
-                al.imshow(imr, interpolation='none'); ar.imshow(imc, interpolation='none')
-#                        pt = trueProj(ref_pos[0],ref_pos[1], cGr=inv(rGc), Zr=f0.Z)
-#                        ar.plot(pt[0], pt[1],'b.')
-            al.plot(ref_pos[0], ref_pos[1],'g.'); al.plot(px, py,'r.')
-            result = best[best!=-1]
-            pm = pb+result*dxy
-            ar.plot(cur_pos[0], cur_pos[1],'g.');ar.plot(pm[0],pm[1],'r*')
-            ab.plot(err)
-            ab.vlines(result,0,1)
-        return best,cost,best_cnt
-
-    def test_EPLMatchMulti():
-        f = plt.figure(num='epl match multi'); f.clear()
-        gs = plt.GridSpec(2,2)
-        al,ar = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
-        ab = f.add_subplot(gs[1,:])
-        plt.tight_layout()
-        al.imshow(f0.im, interpolation='none'); ar.imshow(f1.im, interpolation='none')
-        ar.plot(f1.px,f1.py,'b.',ms=2)
-
-        pref = plt.ginput(1, timeout=-1)[0]
-        best,cost,c_cnt = searchEPLMulti(pref[0], pref[1], f0.im, f1.im, getG(f0,f1), 5, win_width=4, debug=True)
-
-        plt.pause(0.01)
 
     def triangulate(xr,yr,xc,yc,rGc):
         Rrc,Trc = rGc[:3,:3],rGc[:3,3]
@@ -581,16 +530,16 @@ if __name__ == "__main__":
         fig.tight_layout()
 
     if 0:
-        test_calcEpl()
+#        test_calcEpl()
         test_EPLMatch()
 
-    if 0:
-        match,err = f0.searchEPL(f1, 3)
+    if 1:
+        match,err = f0.searchEPL(f1, rmin=iD(5), rmax=iD(2.0), win_width=3) #
         d = triangulate(f0.px,f0.py,match[0],match[1], getG(f0,f1))
-        plotxyzrgb(f0.makePC(d, 0, 5))
+        plotxyzrgb(f0.makePC(d, 0, 10))
         if not f0.Z is None and 0:
             dt = f0.Z[f0.py,f0.px]
-            plotxyzrgb(f0.makePC(dt, 0, 5),hold=True)
+            plotxyzrgb(f0.makePC(dt, 0, 10),hold=True)
             err = np.abs(dt-d)
 
         '''filtering'''
@@ -600,19 +549,35 @@ if __name__ == "__main__":
             d_result[f0.py, f0.px] = d
             df = scipy.ndimage.filters.generic_filter(d_result, np.nanmedian, size=15)
             plotxyzrgb(f0.makePC(df[f0.py, f0.px], 0, 5))
+#%%
 
-    if 0:
-        best,cost,best_cnt = searchEPLMulti(f0.px, f0.py, f0.im, f1.im, getG(f0,f1))
-        for it in range(1,7):
-            if np.mod(it,2):
-                p_seq = xrange(f0.p_cnt)
-                nbrs = f0.nbrs[0]
-            else:
-                p_seq = reversed(xrange(f0.p_cnt))
-                nbrs = f0.nbrs[1]
-            for p_id in p_seq:
-                for nbr_id in nbrs[i]:
-                    pass
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -700,3 +665,88 @@ if __name__ == "__main__":
         return d,d_arg
     def test_dt():
        cost,best_id = dt(np.arange(10,0,-1),np.arange(10), np.arange(3)*3)
+
+#%%
+    def searchEPLMulti(px, py, imr, imc, rGc, N=5, win_width=4, debug=False):
+        # px, py, imr, imc, rGc, N, win_width, debug = pref[0], pref[1], f0.im, f1.im, getG(f0,f1), 5, 4, True
+        # px, py, imr, imc, rGc, N, win_width, debug = f0.px, f0.py, f0.im, f1.im, getG(f0,f1), 5, 4, False
+        px,py = np.atleast_1d(px, py)
+
+        node_cnt = len(px)
+        pb,dxy,dmax,dmin,dxy_local = calcEpl(px, py, rGc)
+        best = np.full((node_cnt, N),-1, 'i')
+        cost = np.empty_like(best, 'f')
+        best_cnt = np.zeros(node_cnt,'i')
+
+        for n in xrange(node_cnt):
+            print n
+            p0 = vec(px[n],py[n])
+
+            ref_pos = p0 - vec(dxy_local[:,n])*np.arange(-win_width, win_width+1) # TODO: correct the sign
+            ref_samples = sample(imr, ref_pos[0], ref_pos[1])
+
+            sam_cnt = np.floor(dmax[n])
+            if sam_cnt<1:
+                best[n] = -1
+                continue
+
+            cur_pos = vec(pb[:,n]) + vec(dxy[:,n])*np.arange(-win_width, sam_cnt+win_width)
+            cur_samples = sample(imc, cur_pos[0], cur_pos[1])
+            err = np.empty(sam_cnt,'f')
+
+            for i in xrange(int(sam_cnt)):
+                diff = ref_samples - cur_samples[i:i+2*win_width+1]
+                err[i] = (diff*diff).sum()
+            extrema_id, = scipy.signal.argrelmin(err)
+            extrema_id = extrema_id[np.argsort(err[extrema_id])]
+            can_cnt = np.minimum(len(extrema_id), N)
+            best_cnt[n] = can_cnt
+            best[n,:can_cnt] = extrema_id[:can_cnt]
+            cost[n,:can_cnt] = err[best[n,:can_cnt]]
+
+        if debug:
+            f = plt.figure(num='epl match multi')
+            if f.axes:
+                al,ar,ab = tuple(f.axes)
+            else:
+                gs = plt.GridSpec(2,2)
+                al,ar = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
+                ab = f.add_subplot(gs[1,:])
+                al.imshow(imr, interpolation='none'); ar.imshow(imc, interpolation='none')
+#                        pt = trueProj(ref_pos[0],ref_pos[1], cGr=inv(rGc), Zr=f0.Z)
+#                        ar.plot(pt[0], pt[1],'b.')
+            al.plot(ref_pos[0], ref_pos[1],'g.'); al.plot(px, py,'r.')
+            result = best[best!=-1]
+            pm = pb+result*dxy
+            ar.plot(cur_pos[0], cur_pos[1],'g.');ar.plot(pm[0],pm[1],'r*')
+            ab.plot(err)
+            ab.vlines(result,0,1)
+        return best,cost,best_cnt
+
+    def test_EPLMatchMulti():
+        f = plt.figure(num='epl match multi'); f.clear()
+        gs = plt.GridSpec(2,2)
+        al,ar = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
+        ab = f.add_subplot(gs[1,:])
+        plt.tight_layout()
+        al.imshow(f0.im, interpolation='none'); ar.imshow(f1.im, interpolation='none')
+        ar.plot(f1.px,f1.py,'b.',ms=2)
+
+        pref = plt.ginput(1, timeout=-1)[0]
+        best,cost,c_cnt = searchEPLMulti(pref[0], pref[1], f0.im, f1.im, getG(f0,f1), 5, win_width=4, debug=True)
+
+        plt.pause(0.01)
+
+
+    if 0:
+        best,cost,best_cnt = searchEPLMulti(f0.px, f0.py, f0.im, f1.im, getG(f0,f1))
+        for it in range(1,7):
+            if np.mod(it,2):
+                p_seq = xrange(f0.p_cnt)
+                nbrs = f0.nbrs[0]
+            else:
+                p_seq = reversed(xrange(f0.p_cnt))
+                nbrs = f0.nbrs[1]
+            for p_id in p_seq:
+                for nbr_id in nbrs[i]:
+                    pass
