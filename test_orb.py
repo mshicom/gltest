@@ -18,7 +18,8 @@ import scipy.ndimage
 import scipy.io
 from vtk_visualizer import *
 
-from scipy import weave
+from scipy import weave,sparse
+
 
 def loaddata1():
     data = scipy.io.loadmat('data.mat')
@@ -158,35 +159,18 @@ if __name__ == "__main__":
                                 (y-cy)/fy,
                                 np.ones(self.p_cnt)])
             ''' 3. patch pixels'''
-            patt = [(y,x),(y-2,x),(y-1,x+1),(y,x+2),(y+1,x+1),(y+2,x),(y+1,x-1),(y,x-2),(y-1,x-1)]
-            self.v = np.vstack([self.im[ind].astype('i2') for ind in patt]).T
+#            patt = [(y,x),(y-2,x),(y-1,x+1),(y,x+2),(y+1,x+1),(y+2,x),(y+1,x-1),(y,x-2),(y-1,x-1)]
+#            self.v = np.vstack([self.im[ind].astype('i2') for ind in patt]).T
             ''' 4. Neighbors Info'''
-            self.nbrs = self.setNeighborsInfo(mask)
+#            self.nbrs = self.setNeighborsInfo(mask)
 
+        def trimPts(self, mask, d=None):
+            var_list = (self.px, self.py, self.P)
+            self.px, self.py, self.P = (np.compress(mask,dump,axis=-1) for dump in var_list)
+            self.p_cnt = self.px.shape[0]
 
-        def setNeighborsInfo(self, mask_image):
-            px, py = self.px, self.py
-            node_cnt = self.p_cnt
-
-            edges_forward = [[] for _ in range(node_cnt)]
-            edges_backward = [[] for _ in range(node_cnt)]
-
-            id_LUT = np.empty_like(mask_image, 'i4')
-            id_LUT[py,px] = range(node_cnt)      # lookup-table of index number for valid pixels
-            for p_id, (p_x,p_y) in enumerate(zip(px, py)):
-                fcoord = [(p_y-1,p_x),(p_y,p_x-1),(p_y-1,p_x-1),(p_y-1,p_x+1)]
-                fnbrs = [id_LUT[coord] for coord in fcoord if mask_image[coord]]
-                if p_id-1 not in fnbrs:
-                    fnbrs.append(p_id-1)
-                edges_forward[p_id].extend(fnbrs)
-
-                bcoord = [(p_y+1,p_x),(p_y,p_x+1),(p_y+1,p_x+1),(p_y+1,p_x-1)]
-                bnbrs = [id_LUT[coord] for coord in bcoord if mask_image[coord]]
-                if p_id+1 not in bnbrs:
-                    fnbrs.append(p_id+1)
-                edges_backward[p_id].extend(bnbrs)
-            return edges_forward, edges_backward
-
+            if not d is None:
+                return d[mask]
 
         def calcPtsAngle(self, M):
             p0 = self.wGc[0:3,0:3].dot(self.P)
@@ -213,6 +197,68 @@ if __name__ == "__main__":
             I = np.tile(self.im[self.py, self.px]*255,(3,1))
             P = np.vstack([p3d, I]).T
             return P[vm_ind,:]      # Nx6
+
+        def getPtsMask(self):
+            mask_im = np.full_like(self.im, False,'bool')
+            mask_im[self.py, self.px] = True
+            return mask_im
+
+        def setNeighborsInfo(self):
+            mask_image = self.getPtsMask()
+            px, py = self.px, self.py
+            node_cnt = self.p_cnt
+
+            edges_forward = [[] for _ in range(node_cnt)]
+            edges_backward = [[] for _ in range(node_cnt)]
+
+            id_LUT = np.empty_like(mask_image, 'i4')
+            id_LUT[py,px] = range(node_cnt)      # lookup-table of index number for valid pixels
+            for p_id, (p_x,p_y) in enumerate(zip(px, py)):
+                fcoord = [(p_y-1,p_x),(p_y,p_x-1),(p_y-1,p_x-1),(p_y-1,p_x+1)]
+                fnbrs = [id_LUT[coord] for coord in fcoord if mask_image[coord]]
+                if p_id-1 not in fnbrs:
+                    fnbrs.append(p_id-1)
+                edges_forward[p_id].extend(fnbrs)
+
+                bcoord = [(p_y+1,p_x),(p_y,p_x+1),(p_y+1,p_x+1),(p_y+1,p_x-1)]
+                bnbrs = [id_LUT[coord] for coord in bcoord if mask_image[coord]]
+                if p_id+1 not in bnbrs:
+                    fnbrs.append(p_id+1)
+                edges_backward[p_id].extend(bnbrs)
+            return edges_forward, edges_backward
+
+        def getIncidenceMat(self):
+            mask_im = self.getPtsMask()
+
+            node_cnt = self.p_cnt
+            id_LUT = np.empty_like(mask_im, 'i4')
+            id_LUT[mask_im] = range(node_cnt)      # lookup-table of index number for valid pixels
+            edges = []
+            for p_id in range(node_cnt):
+                p_x, p_y = self.px[p_id], self.py[p_id]
+                degree = 0
+                '''diagonal edge'''
+                if 0:
+                    if mask_im[p_y-1, p_x+1]:
+                        edges.append([p_id, id_LUT[p_y-1, p_x+1]]); degree += 1
+                    if mask_im[p_y-1, p_x-1]:
+                        edges.append([p_id, id_LUT[p_y-1, p_x-1]]); degree += 1
+
+                if mask_im[p_y-1, p_x]:
+                    edges.append([p_id, id_LUT[p_y-1,  p_x ]]); degree += 1
+                if mask_im[p_y, p_x-1]:
+                    edges.append([p_id, id_LUT[ p_y,  p_x-1]]); degree += 1
+
+            edge_cnt = len(edges)
+            row_ind = np.tile(np.arange(edge_cnt)[:,np.newaxis],2).ravel()
+            col_ind = np.array(edges).ravel()
+            data = np.tile(np.array([1,-1]), edge_cnt)
+            incidence_matrix = sparse.csr_matrix((data,(row_ind,col_ind)), (len(edges),node_cnt),'i4')
+
+            return incidence_matrix      # np.array(edges,'i4'), edges array, each row represent an edge
+
+
+
 
     def getG(f0,f1):
         '''return 1G0, which p1 = 1G0 * p0  '''
@@ -319,7 +365,7 @@ if __name__ == "__main__":
 
     @timing
     def searchEPL(px, py, imr, imc, rGc, rmin=None,rmax=None,win_width=4, debug=False):
-        # px, py, imr, imc, rGc, win_width, debug = pref[0], pref[1], f0.im, f1.im, getG(f0,f1), 4, True
+        # px, py, imr, imc, rGc, win_width, debug, rmin, rmax= pref[0], pref[1], f0.im, f1.im, getG(f0,f1), 4, True, None,None
         px,py = np.atleast_1d(px, py)
 
         node_cnt = len(px)
@@ -470,7 +516,7 @@ if __name__ == "__main__":
         al.imshow(f0.im, interpolation='none'); ar.imshow(f1.im, interpolation='none')
 
         pref = plt.ginput(1, timeout=-1)[0]
-        best0 = searchEPL(pref[0], pref[1], f0.im, f1.im, getG(f0,f1), iD(10),iD(2), win_width=4, debug=True)
+        best0,cost = searchEPL(pref[0], pref[1], f0.im, f1.im, getG(f0,f1), iD(10),iD(2), win_width=4, debug=True)
 #        ar.plot(f1.px,f1.py,'b.',ms=2)
         plt.pause(0.01)
 
@@ -535,8 +581,12 @@ if __name__ == "__main__":
 
     if 1:
         match,err = f0.searchEPL(f1, rmin=iD(5), rmax=iD(2.0), win_width=3) #
-        d = triangulate(f0.px,f0.py,match[0],match[1], getG(f0,f1))
-        plotxyzrgb(f0.makePC(d, 0, 10))
+        d = 1./calcInvDepth(f0.px,f0.py,match[0],match[1], getG(f1,f0))   # triangulate(f0.px,f0.py,match[0],match[1], getG(f0,f1))
+        d = f0.trimPts(conditions(~np.isnan(d), d<10 ,d>0), d)
+        plotxyzrgb(f0.makePC(d))
+
+        L = f0.getIncidenceMat()
+
         if not f0.Z is None and 0:
             dt = f0.Z[f0.py,f0.px]
             plotxyzrgb(f0.makePC(dt, 0, 10),hold=True)
@@ -581,7 +631,7 @@ if __name__ == "__main__":
 
 
 
-#%%
+#%% distance transform
     @timing
     def dt(f, q=None, p=None):
         f = f.astype('f').copy()
@@ -664,7 +714,58 @@ if __name__ == "__main__":
                          compiler='gcc', extra_compile_args=['-std=gnu++11 -msse2 -O3'])
         return d,d_arg
     def test_dt():
-       cost,best_id = dt(np.arange(10,0,-1),np.arange(10), np.arange(3)*3)
+        a = np.array(range(5,0,-1)+range(6))*5
+        cost,best_id = dt(a)
+        plt.plot(a)
+        plt.plot(cost)
+        [plt.plot( a+(np.arange(11)-i)**2, ':') for i in range(11)]
+
+        cost,best_id = dt(np.arange(10,0,-1),np.arange(10), np.arange(3)*3)
+
+    if 0:
+
+        N = 30
+        C = (np.sin(2*np.pi*np.arange(N, dtype='f')/N + vec(2,-3,4))+1)*10
+        cost,best = map(np.asarray, zip(*[dt(C[i]) for i in range(3)]))
+        f,a = plt.subplots(1,1,num='cost');a.clear()
+        a.plot(C[0])
+        a.plot(cost[0])
+        [a.plot( C[0]+(np.arange(N)-i)**2, ':') for i in range(N)]
+
+        L = np.array([[1,-1,0],[0,1,-1],[-1,0,1]],'f') #
+        LtL = L.T.dot(L)
+        def prox_f2(x, Lambda=1.0):
+            return Lambda/(Lambda+1.0)*x
+        def prox_fl2(x, Lambda=1.0):
+            v = np.sqrt(np.sum(x**2))
+            return np.where(v<Lambda, np.zeros_like(x), (1-Lambda/v)*x)
+        def prox_g(x, Lambda=1):
+            return np.argmin((vec(x)-np.arange(N))**2*(0.5/Lambda) + C,axis=1)
+#            return best[range(3), np.clip(x,0,N-1).astype('i')]
+
+        x = np.array([25,5,0],'f')#np.argmin(C, axis=1)#
+        z = x.copy()
+        u = x - z
+
+        f,a = plt.subplots(1,1,num='ADMM');a.clear()
+        a.plot(C.T)
+        a.set_xlim(-1,30)
+        l1,l2,l3 = (a.axvline(foo,0,2,c=color) for foo,color in zip(vec(x),['b','g','r']))
+
+        for it in range(30):
+            [foo.set_xdata(bar) for foo,bar in zip([l1,l2,l3],vec(x))]
+            print np.sqrt(np.sum(L.dot(x)**2))+C[range(3),x.astype('i')].sum()
+            print x,z,u
+
+            plt.pause(0.01)
+            plt.waitforbuttonpress()
+
+            x = prox_g(x-L.T.dot(L.dot(x)-z+u))
+            z = prox_fl2(L.dot(x) + u)
+            u = u+L.dot(x)-z
+
+
+
 
 #%%
     def searchEPLMulti(px, py, imr, imc, rGc, N=5, win_width=4, debug=False):

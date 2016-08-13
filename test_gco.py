@@ -239,7 +239,7 @@ if __name__ == "__main__":
     L = incidence_matrix
     Lt = incidence_matrix.transpose()
     tau = 1.0/np.array(np.abs(L).sum(axis=0)).ravel()   # edge number for each node
-    sigma = 0.5     # sigma = 1.0/np.array(np.abs(L).sum(axis=1)).ravel()
+    sigma = 0.5     # sigma = 1.0/np.array(np.abs(L).sum(axis=1)).ravel()  # node number for each edge
 
     d_result = np.full_like(lim, 0)
     p3d = np.vstack([(px-0.5*w)/435.016,
@@ -316,3 +316,16 @@ if __name__ == "__main__":
     solver = solvers.forward_backward(method='FISTA', step=0.5/tau)
     x0 = d_cut
     ret = solvers.solve([fdata, fsmooth], x0, solver, maxit=100)
+
+#%%
+    I = np.array([[1,-1,0],[0,1,-1],[-1,0,1]],'f')
+#                  [-1,1,0],[0,-1,1],[1,0,-1]],
+    It = I.T
+    tau = 1.0/np.abs(I).sum(axis=0)   # edge number for each node
+    sigma = 0.5                                         # node number for each edge
+
+    x = np.array([2,1,10],'f')
+    for it in range(10):
+        flow = sigma*I.dot(x)
+        x -= tau*It.dot(flow)
+        print flow,x
