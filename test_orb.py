@@ -257,9 +257,6 @@ if __name__ == "__main__":
 
             return incidence_matrix      # np.array(edges,'i4'), edges array, each row represent an edge
 
-
-
-
     def getG(f0,f1):
         '''return 1G0, which p1 = 1G0 * p0  '''
         return np.dot(inv(f0.wGc), f1.wGc)
@@ -281,15 +278,15 @@ if __name__ == "__main__":
             but what we want is x' in this form:
                 x' =  Pinf[1:2]/Pinf[3] + λ*dxy[1:2]   (eq.2)
             putting eq.1 & eq.2 together and solve for dxy, we get:
-                dxy[1:2] = 1/(Pinf[3]+ λ*Pe[3]) * (-Pe[3]/Pinf[3]*Pinf[1:2] + Pe[1:2])   (eq.3)
+                  dxy[1:2] = 1/(Pinf[3]+ λ*Pe[3]) * (-Pe[3]/Pinf[3]*Pinf[1:2] + Pe[1:2])   (eq.3)
             so normalize(dxy) = normalize(-Pe[3]/Pinf[3]*Pinf[1:2] + Pe[1:2]),  if (Pinf[3]+ λ*Pe[3])>0,
                               = -normalize(-Pe[3]/Pinf[3]*Pinf[1:2] + Pe[1:2]), otherwise.
             for (Pinf[3]+ λ*Pe[3])>0 ,we have:
                 λ > 0 > -Pinf[3]/Pe[3],  if Pe[3]>0;
                 -Pinf[3]/Pe[3] > λ > 0,  otherwise
         '''
-        # xr,yr,rGc = pref[0], pref[1], getG(f0,f1)
-        # xr,yr,rGc = f0.px, f0.py, getG(f0,f1)
+        # xr,yr,rGc,rmin,rmax = pref[0], pref[1], getG(f0,f1), None, None
+        # xr,yr,rGc,rmin,rmax = f0.px, f0.py, getG(f0,f1), None, None
         xr,yr = np.atleast_1d(xr,yr)
 
         Rrc,Trc = rGc[:3,:3],rGc[:3,3]
@@ -301,26 +298,40 @@ if __name__ == "__main__":
 
         H = K.dot(Rcr.dot(inv(K)))
         Pinf = H.dot(Pr)  # <= projection of points at infinity, Pinf=K.dot(Rcr.dot(backproject(xr, yr))
+        nPinf = Pinf[:2]/Pinf[2]
         Pe1 = vec(K.dot(Tcr))
-        dxy = normalize(-Pe1[2]/Pinf[2]*Pinf[:2]+Pe1[:2])   # 2xN
 
-        x_limit = np.maximum(-Pinf[0]/dxy[0], (w-Pinf[0])/dxy[0])   # Pinf.x + x_limit*dx = {0,w}
-        y_limit = np.maximum(-Pinf[1]/dxy[1], (h-Pinf[1])/dxy[1])   # Pinf.y + y_limit*dy = {0,h}
-        dinv_max = np.minimum(x_limit, y_limit)             # N
+        dxy_raw = -Pe1[2]/Pinf[2]*Pinf[:2]+Pe1[:2]   # 2xN
+        dxy_norm = np.linalg.norm(dxy_raw, axis=0)   # N
+        dxy = dxy_raw/dxy_norm
 
-        if not rmin is None:
-            dx_min = (-Pe1[2]/Pinf[2]*Pinf[0] + Pe1[0])/(Pinf[2]/rmin + Pe1[2])    # from eq.3
-            vmin = dx_min/dxy[0]
-        else:
+        '''given λ=[rmin,rmax] and image boundary, calc epiline length.
+           By definition, the two endpoints of epiline are:
+               [dxy_min,dxy_max] := [vmin,vmax]*normalize(dxy)
+           from eq.3 we have:
+               [dxy_min,dxy_max] = [λ_min, λ_max]*dxy[1:2]
+                                 = [λ_min, λ_max]*right-side-of-eq3
+           putting them together we can solve for vmin,vmax
+               λ/(Pinf[3] + λ*Pe[3])*dxy_norm = v
+        '''
+        if rmin is None:
+            rmin = np.zeros_like(xr)
             vmin = np.zeros_like(xr)
-
-        if not rmax is None:
-            dx_max = (-Pe1[2]/Pinf[2]*Pinf[0] + Pe1[0])/(Pinf[2]/rmax + Pe1[2])
-            vmax = np.minimum(dx_max/dxy[0], dinv_max)
         else:
-            vmax = dinv_max
+            dx_min = dxy_raw[0]/(Pinf[2]/rmin + Pe1[2]) #
+            vmin = dx_min/dxy[0]
 
-        return Pinf[:2]/Pinf[2], dxy, vmax, vmin, dxy_local
+        x_limit = np.maximum(-nPinf[0]/dxy[0], (w-nPinf[0])/dxy[0])   # Pinf.x + x_limit*dx = {0,w}
+        y_limit = np.maximum(-nPinf[1]/dxy[1], (h-nPinf[1])/dxy[1])   # Pinf.y + y_limit*dy = {0,h}
+        vmax = np.minimum(x_limit, y_limit)             # N
+        if not rmax is None:
+            dx_max = dxy_raw[0]/(Pinf[2]/rmax + Pe1[2])
+            vmax = np.minimum(dx_max/dxy[0], vmax)
+        # update actual λ_max given vmax
+        a = vmax/dxy_norm
+        rmax = a*Pinf[2]/(1-a*Pe1[2])   # λ/(Pinf[2] + λPe1[2])*dxy_norm = v
+        var = (rmax-rmin)/(vmax-vmin)
+        return nPinf[:2], dxy, vmax, vmin, dxy_local, var
 
     def calcInvDepth(xr,yr,xc,yc,cGr,K=K):
         '''Once we have x'[1:2], puting it in eq.1 and solve for λ, we get:
@@ -333,7 +344,23 @@ if __name__ == "__main__":
         H = K.dot(Rcr.dot(inv(K)))
         Pinf = H.dot(projective(xr, yr))  # Pinf=K.dot(Rcr.dot(backproject(xr, yr))
         Pe = vec(K.dot(Tcr))
+
         dinv = (Pinf[0] - Pinf[2]*xc)/(Pe[2]*xc-Pe[0])     # or (Pinf[1] - Pinf[2]*yc)/(Pe[2]*yc-Pe[0])
+        return dinv
+
+    def calcInvDepth2(xr,yr,v,cGr,K=K):
+        # xr,yr,cGr = f0.px, f0.py, getG(f1,f0)
+        xr,yr = np.atleast_1d(xr,yr)
+        Rcr,Tcr = cGr[:3,:3],cGr[:3,3]
+
+        H = K.dot(Rcr.dot(inv(K)))
+        Pinf = H.dot(projective(xr, yr))  # Pinf=K.dot(Rcr.dot(backproject(xr, yr))
+        Pe = vec(K.dot(Tcr))
+
+        dxy_raw = -Pe[2]/Pinf[2]*Pinf[:2]+Pe[:2]   # 2xN
+        dxy_norm = np.linalg.norm(dxy_raw, axis=0)   # N
+        a = v/dxy_norm
+        dinv = a*Pinf[2]/(1-a*Pe[2])   # λ/(Pinf[2] + λPe1[2])*dxy_norm = v
         return dinv
 
     def test_calcEpl():
@@ -349,7 +376,7 @@ if __name__ == "__main__":
         pcur /= pcur[2]
         a.plot(pcur[0]+640, pcur[1],'b.')
 
-        pb,dxy,dmax,dmin,dxy_local = calcEpl(pref[0], pref[1], inv(cGr),rmin=iD(10),rmax=iD(0.5)) #
+        pb,dxy,dmax,dmin,dxy_local,var = calcEpl(pref[0], pref[1], inv(cGr),rmin=iD(10),rmax=iD(0.5)) #
         pmax = pb+dmax*dxy
         pmin = pb+dmin*dxy
         a.plot([pmin[0]+640,pmax[0]+640], [pmin[1],pmax[1]],'g-')
@@ -360,8 +387,13 @@ if __name__ == "__main__":
         cGr = getG(f1,f0)
         tx,ty = trueProj(f0.px, f0.py, cGr, Zr=f0.Z)
         td = sample(f0.Z, f0.px, f0.py)
-        d = 1.0/calcInvDepth(f0.px, f0.py,tx,ty,cGr)
-        print np.allclose(td, d)
+        d = calcInvDepth(f0.px, f0.py,tx,ty,cGr)
+        assert( np.allclose(td, 1.0/d))
+
+        pb,dxy,dmax,dmin,dxy_local,var = calcEpl(f0.px, f0.py, inv(cGr)) #
+        v = (tx - pb[0])/dxy[0]
+        d2 = calcInvDepth2(f0.px, f0.py, v, cGr)
+        assert( np.allclose(td, 1.0/d2))
 
     @timing
     def searchEPL(px, py, imr, imc, rGc, rmin=None,rmax=None,win_width=4, debug=False):
@@ -369,7 +401,7 @@ if __name__ == "__main__":
         px,py = np.atleast_1d(px, py)
 
         node_cnt = len(px)
-        pb,dxy,dmax,dmin,dxy_local = calcEpl(px, py, rGc,rmin,rmax)
+        pb,dxy,dmax,dmin,dxy_local,var = calcEpl(px, py, rGc,rmin,rmax)
         best = np.empty(node_cnt,'i')
         cost = np.empty(node_cnt,'f')
         if 0 or debug:
@@ -393,6 +425,7 @@ if __name__ == "__main__":
                 for i in xrange(sam_cnt):
                     diff = ref_samples - cur_samples[i:i+2*win_width+1]
                     err[i] = (diff*diff).sum()
+
                 mininum = np.nanargmin(err)
                 best[n] = sam_min+mininum  #np.argpartition(err, 5)
                 cost[n] = err[mininum]
@@ -472,25 +505,23 @@ if __name__ == "__main__":
                 /* 2. go through all the points in cur */
                 float min_diff = std::numeric_limits<float>::infinity();
                 for(int i=0; i<sample_size; i++ ){
-                    // speed up: check diff in central pixel, skip if too large
-                    //if( std::fabs(ref_samples[win_width]-cur_samples[i+win_width])> 30/255.0)
-                    // continue;
-
                     float diff = 0;
                     for(int j=0; j<win_size;j++ ){
                         float err = ref_samples[j] - cur_samples[i+j];
                         diff += err*err;
                     }
-                    err[i] = diff;
+
                     #if 0
                         if (diff<min_diff){
                             min_diff = diff;
                             BEST1(p_id) =i;
                         }
+                    #else
+                        err[i] = diff;
                     #endif
                 }
-                //COST1(p_id) = min_diff;
-                //BEST1(p_id) += sam_min;
+                COST1(p_id) = min_diff;
+                BEST1(p_id) += sam_min;
                 /* 3. find the best N element */
                 #if 1
                     auto result = std::min_element(std::begin(err), std::end(err));
@@ -501,11 +532,11 @@ if __name__ == "__main__":
             '''% {'win_width': win_width }
             ima,imb,width = imr, imc, imr.shape[1]
             weave.inline(code, ['ima','imb','width','node_cnt','pb','dmax','dmin','dxy','dxy_local','px','py','best','cost'],#
-                support_code=scode, headers=['<algorithm>','<cmath>','<vector>','<map>','<csignal>'],
+                support_code=scode, headers=['<algorithm>','<cmath>','<vector>','<map>','<csignal>','<set>'],
                 compiler='gcc', extra_compile_args=['-std=gnu++11 -msse2 -O3'])
 #        best[cost>0.1] = -1
         res = pb+best*dxy
-        return res, cost
+        return res, cost, var
 
     def test_EPLMatch():
         f = plt.figure(num='epl match'); f.clear()
@@ -516,7 +547,7 @@ if __name__ == "__main__":
         al.imshow(f0.im, interpolation='none'); ar.imshow(f1.im, interpolation='none')
 
         pref = plt.ginput(1, timeout=-1)[0]
-        best0,cost = searchEPL(pref[0], pref[1], f0.im, f1.im, getG(f0,f1), iD(10),iD(2), win_width=4, debug=True)
+        best0,cost,var = searchEPL(pref[0], pref[1], f0.im, f1.im, getG(f0,f1), iD(10),iD(2), win_width=4, debug=True)
 #        ar.plot(f1.px,f1.py,'b.',ms=2)
         plt.pause(0.01)
 
@@ -545,7 +576,7 @@ if __name__ == "__main__":
     ''' set up matching Frame'''
     refid = 0
     fs = []
-    seq = [refid, 9]
+    seq = [refid, 4, 9]
     for fid in seq:
         try:
             f = Frame(frames[fid], wGc[fid],Z=Zs[fid])
@@ -580,10 +611,10 @@ if __name__ == "__main__":
         test_EPLMatch()
 
     if 1:
-        match,err = f0.searchEPL(f1, rmin=iD(5), rmax=iD(2.0), win_width=3) #
+        match,err,var = f0.searchEPL(f1, rmin=iD(5), rmax=iD(2.0), win_width=3) #
         d = 1./calcInvDepth(f0.px,f0.py,match[0],match[1], getG(f1,f0))   # triangulate(f0.px,f0.py,match[0],match[1], getG(f0,f1))
-        d = f0.trimPts(conditions(~np.isnan(d), d<10 ,d>0), d)
-        plotxyzrgb(f0.makePC(d))
+#        d = f0.trimPts(conditions(~np.isnan(d), d<10, d>0, err<0.1), d)
+#        plotxyzrgb(f0.makePC(d))
 
         L = f0.getIncidenceMat()
 
