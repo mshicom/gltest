@@ -127,14 +127,12 @@ if __name__ == "__main__":
                      'px','py','p_cnt','P',     \
                      'nbrs','v','grad','orin',
                      'Z']
-        def __init__(self, img, wGc=np.eye(4), Z=None, gthreshold=None):
+        def __init__(self, img, wGc=np.eye(4), Z=None):
             self.im = np.ascontiguousarray(img.astype('f')/255.0)
             self.wGc = wGc.copy()
             self.Z = Z
 
-            '''extract sailent points'''
-            self.extractPts(gthreshold)
-
+            self.extractPts()
 
         def extractPts(self, gthreshold=None):
             ''' 1.extract pixels with significant gradients'''
@@ -146,7 +144,7 @@ if __name__ == "__main__":
             if gthreshold is None:
                 gthreshold = np.percentile(grad, 80)
             u, v = np.meshgrid(range(w),range(h))
-            border_width = 4
+            border_width = 40
             mask = reduce(np.logical_and, [grad>gthreshold,
                                            w-border_width>u, u>=border_width,
                                            h-border_width>v, v>=border_width]) # exclude border pixels
@@ -189,7 +187,10 @@ if __name__ == "__main__":
 
         def searchEPL(self, f1, rmin=None,rmax=None,win_width=4):
             rGc = relPos(self.wGc, f1.wGc)
-            return searchEPL(self.px, self.py, self.im, f1.im, rGc, rmin, rmax, win_width)
+            cGr = inv(rGc)
+            match,err,var = searchEPL(self.px, self.py, self.im, f1.im, rGc, rmin, rmax, win_width)
+            d = calcInvDepth(self.px, self.py, match[0], match[1], cGr)
+            return d,err,var
 
         def makePC(self, depth, vmin=0, vmax=10):
             vm_ind, = np.where(conditions(depth>vmin,  depth<vmax))
@@ -331,7 +332,7 @@ if __name__ == "__main__":
         a = vmax/dxy_norm
         rmax = a*Pinf[2]/(1-a*Pe1[2])   # λ/(Pinf[2] + λPe1[2])*dxy_norm = v
         var = (rmax-rmin)/(vmax-vmin)
-        return nPinf[:2], dxy, vmax, vmin, dxy_local, var
+        return nPinf[:2], dxy, vmax, vmin, dxy_local, var**2
 
     def calcInvDepth(xr,yr,xc,yc,cGr,K=K):
         '''Once we have x'[1:2], puting it in eq.1 and solve for λ, we get:
@@ -443,7 +444,7 @@ if __name__ == "__main__":
                     ''' '''
                     al.plot(ref_pos[0], ref_pos[1],'g.'); al.plot(px, py,'r.')
                     pm = pb+best*dxy
-                    ar.plot(cur_pos[0], cur_pos[1],'g.');ar.plot(pm[0],pm[1],'r*');
+                    ar.plot(cur_pos[0], cur_pos[1],'g.');ar.plot(pm[0],pm[1],'ro');
                     ab.plot(err)
                     ab.vlines(mininum,0,1)
 
@@ -528,6 +529,7 @@ if __name__ == "__main__":
                     BEST1(p_id) = sam_min + std::distance(std::begin(err), result);
                     COST1(p_id) = *result;
                 #endif
+
             }
             '''% {'win_width': win_width }
             ima,imb,width = imr, imc, imr.shape[1]
@@ -547,7 +549,7 @@ if __name__ == "__main__":
         al.imshow(f0.im, interpolation='none'); ar.imshow(f1.im, interpolation='none')
 
         pref = plt.ginput(1, timeout=-1)[0]
-        best0,cost,var = searchEPL(pref[0], pref[1], f0.im, f1.im, getG(f0,f1), iD(10),iD(2), win_width=4, debug=True)
+        best0,cost,var = searchEPL(pref[0], pref[1], f0.im, f1.im, getG(f0,f1), iD(10),iD(0.1), win_width=4, debug=True)
 #        ar.plot(f1.px,f1.py,'b.',ms=2)
         plt.pause(0.01)
 
@@ -572,18 +574,61 @@ if __name__ == "__main__":
 
 
 
-#%%
+#%% main
     ''' set up matching Frame'''
     refid = 0
+
     fs = []
-    seq = [refid, 4, 9]
+    seq = [refid, 1, 2, 3, 4,5,6,7,8,9]
     for fid in seq:
         try:
             f = Frame(frames[fid], wGc[fid],Z=Zs[fid])
         except:
             f = Frame(frames[fid], wGc[fid])
         fs.append(f)
-    f1,f0 = fs[0],fs[1]
+    f0,f1 = fs[0],fs[1]
+
+    if 0:
+        test_calcEpl()
+        test_EPLMatch()
+
+    if 1:
+
+        ds,vs,es = [],[],[]
+        for i in range(1,len(fs)):
+            d, err, var = f0.searchEPL(fs[i], rmin=iD(5), rmax=iD(0.1), win_width=3) #
+            ds.append(d)
+            es.append(err)
+            vs.append(var)
+
+        def mergeD(d0, var0, d1, var1):
+            var_sum = var0+var1
+            d = var1/var_sum*d0 + var0/var_sum*d1
+            var = var1*var0/var_sum
+            return d,var
+
+        p0 = 37838
+        d,var = ds[0],vs[0]
+        print vec([v[pid] for v in vs ])
+        for d_,var_ in reversed(zip(ds[1:],vs[1:])):
+            d,var = mergeD(d, var, d_, var_)
+            print var[p0]
+            plotxyzrgb(f0.makePC(1.0/d))
+            plt.waitforbuttonpress()
+
+
+        if not f0.Z is None and 0:
+            dt = f0.Z[f0.py,f0.px]
+            plotxyzrgb(f0.makePC(dt, 0, 10),hold=True)
+            err = np.abs(dt-d)
+
+        '''filtering'''
+        if 0:
+            d[conditions(d>10,d<1)] = np.nan
+            d_result = np.full_like(f0.im, np.nan,'f')
+            d_result[f0.py, f0.px] = d
+            df = scipy.ndimage.filters.generic_filter(d_result, np.nanmedian, size=15)
+            plotxyzrgb(f0.makePC(df[f0.py, f0.px], 0, 5))
 
     ''' plot all image'''
     if 0:
@@ -605,34 +650,9 @@ if __name__ == "__main__":
 #            pref = fref.ProjTo(fcur)
 #            sp.plot(pref[0], pref[1], 'r.', ms=2)
         fig.tight_layout()
-
-    if 0:
-#        test_calcEpl()
-        test_EPLMatch()
-
-    if 1:
-        match,err,var = f0.searchEPL(f1, rmin=iD(5), rmax=iD(2.0), win_width=3) #
-        d = 1./calcInvDepth(f0.px,f0.py,match[0],match[1], getG(f1,f0))   # triangulate(f0.px,f0.py,match[0],match[1], getG(f0,f1))
-#        d = f0.trimPts(conditions(~np.isnan(d), d<10, d>0, err<0.1), d)
-#        plotxyzrgb(f0.makePC(d))
-
-        L = f0.getIncidenceMat()
-
-        if not f0.Z is None and 0:
-            dt = f0.Z[f0.py,f0.px]
-            plotxyzrgb(f0.makePC(dt, 0, 10),hold=True)
-            err = np.abs(dt-d)
-
-        '''filtering'''
-        if 0:
-            d[conditions(d>10,d<1)] = np.nan
-            d_result = np.full_like(f0.im, np.nan,'f')
-            d_result[f0.py, f0.px] = d
-            df = scipy.ndimage.filters.generic_filter(d_result, np.nanmedian, size=15)
-            plotxyzrgb(f0.makePC(df[f0.py, f0.px], 0, 5))
 #%%
 
-
+    np.array([ v[pid] for v in vs ])
 
 
 
