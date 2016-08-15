@@ -5,6 +5,7 @@ Created on Wed Jun  1 14:26:41 2016
 
 @author: nubot
 """
+from __future__ import division
 import numpy as np
 import matplotlib.pyplot as plt
 pis = plt.imshow
@@ -18,7 +19,11 @@ import scipy.ndimage
 from vtk_visualizer import *
 from scipy import weave
 from mpl_toolkits.mplot3d import Axes3D
+import scipy.sparse
+def vec(*arg):
+    return np.reshape(arg,(-1,1))
 
+#%%
 if __name__ == "__main__":
     lim = plt.imread('./left0000.jpg')[:,:,0].astype('i4').copy()
     rim = plt.imread('./right0000.jpg')[:,:,0].astype('i4').copy()
@@ -221,7 +226,7 @@ if __name__ == "__main__":
 
         base = np.zeros_like(min_idx, dtype=np.float)
         base[nz_mask] = min_idx[nz_mask] - grad[nz_mask]/grad2[nz_mask]
-    return base/Steps, min_value
+        return base/Steps, min_value
 
     f,a = plt.subplots(1,1,num='tv')
     a.clear()
@@ -230,10 +235,10 @@ if __name__ == "__main__":
     Lambda = 1e0
     beta = 1e-3
     theta_init,theta_end = 100,1e-3
-
+    epsilon = 0.01
     py, px = pvm[0].nonzero()
 
-    p = np.zeros(incidence_matrix.shape[0],'f')
+    q = np.zeros(incidence_matrix.shape[0],'f')
     d = d_cut.astype('f').copy()
 
     L = incidence_matrix
@@ -250,9 +255,10 @@ if __name__ == "__main__":
     Eaus = np.empty_like(Cost,'f')
     n = 0
     i_list = np.linspace(0, 1, Cost.shape[1], endpoint=0)
+    theta = theta_init
     while theta > theta_end:
         q = (q+sigma*L.dot(d))/(1.0+epsilon*sigma)
-        p /= np.maximum(1, np.abs(p)) # reprojection
+        q /= np.maximum(1, np.abs(q)) # reprojection
 
         # 2. gradient descent on the primal variable
         d = d + tau*(a/theta - Lt.dot(q))
@@ -318,14 +324,94 @@ if __name__ == "__main__":
     ret = solvers.solve([fdata, fsmooth], x0, solver, maxit=100)
 
 #%%
-    I = np.array([[1,-1,0],[0,1,-1],[-1,0,1]],'f')
-#                  [-1,1,0],[0,-1,1],[1,0,-1]],
-    It = I.T
-    tau = 1.0/np.abs(I).sum(axis=0)   # edge number for each node
-    sigma = 0.5                                         # node number for each edge
 
-    x = np.array([2,1,10],'f')
-    for it in range(10):
-        flow = sigma*I.dot(x)
-        x -= tau*It.dot(flow)
-        print flow,x
+    I = np.array([[-1,1,0],[0,-1,1],[1,0,-1]],'f')
+    L = I.T.dot(I)
+    D = L.diagonal()
+    A = np.diag(D)-L
+
+    N = 30
+    C = (np.sin(2*np.pi*np.arange(N, dtype='f')/N + vec(2,-3,4))+1)*15
+    Lambda = 1.0
+
+    def findOpt(Lambda,C):
+        n,m = C.shape  # nodes,datas = n,m
+        e = np.empty((m,)*n,'f')
+        from itertools import product
+        for inds in product(range(m),repeat=n):
+            x = np.asarray(inds)
+            e[inds] = x.T.dot(L.dot(x))+Lambda*(np.sum(C[range(n),inds]))
+        x_opt = np.unravel_index(np.argmin(e), e.shape)
+        print Lambda, x_opt, e[x_opt]
+        return x_opt
+    x_opt = findOpt(Lambda,C)
+
+    def evalE(x,y):
+        return x.T.dot(L.dot(x)) + Lambda*np.sum((x-y)**2)
+
+    def findOptl2(Lambda,y):
+        n = y.shape[0]  # nodes,datas = n,m
+        m = 30
+        e = np.empty((m,)*n,'f')
+        from itertools import product
+        for inds in product(range(m),repeat=n):
+            x = np.asarray(inds)
+            e[inds] = evalE(x,y)
+        x_opt = np.unravel_index(np.argmin(e), e.shape)
+        print Lambda,y,x_opt
+        return x_opt
+    x_opt = findOptl2(Lambda, y)
+
+    def solveLinear(y, Lambda=Lambda, L=L):
+        '''solve matrix equation: (λI+A)*x = y, for argmin[x'Ax +λ(x-y)**2]'''
+        if scipy.sparse.isspmatrix(L):
+            A = Lambda*scipy.sparse.identity(len(y)) + L
+            x = scipy.sparse.linalg.spsolve(A, y)
+        else:
+            A = Lambda*np.identity(len(y)) + L
+            x = np.linalg.solve(A, y)
+        return x
+
+
+    def solveFixIter(x, y, Lambda=Lambda, A=A, D=D, it_num=10):
+        if 1:
+            c0 = Lambda/(Lambda+D)
+            c1 = 1/(Lambda+D)
+            for it in range(it_num):
+                x = c0*y + c1*A.dot(x)
+        else:
+            '''slower version'''
+            nbrs = [np.where(A[v])[0] for v in range(len(x))]
+            for it in range(it_num):
+                '''for each node v'''
+                for v in range(x.shape[0]):
+                    '''neighbor u'''
+                    c = [ x[u] for u in nbrs[v] ]
+                    x[v] = Lambda/(Lambda+D[v])*y[v] + 1/(Lambda+D[v])*np.sum(c)
+        return x
+
+    x = np.argmin(C,axis=-1).astype('f')
+    y = x.copy()
+
+    f,a = plt.subplots(1,1,num='ADMM');a.clear()
+    a.plot(C.T)
+    a.set_xlim(-1,30)
+    l1,l2,l3 = (a.axvline(foo,0,2,c=color) for foo,color in zip(vec(x),['b','g','r']))
+
+    beta = 1e-2
+    theta_init,theta_end = 1e2,1e-3
+    theta = theta_init
+    n = 0
+    while theta > theta_end:
+        [foo.set_xdata(bar) for foo,bar in zip([l1,l2,l3],vec(x))]
+
+        x = solveFixIter(x, y, 1/theta)
+#        x = solveLinear(y, 1/theta)
+        y = np.argmin(Lambda*C+(np.arange(N)-vec(x))**2/theta, axis=-1)
+
+        theta = theta*(1.0-beta*n)
+        n += 1
+        print x
+        plt.pause(0.01)
+#        plt.waitforbuttonpress()
+
