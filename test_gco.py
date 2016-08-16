@@ -330,37 +330,20 @@ if __name__ == "__main__":
     D = L.diagonal()
     A = np.diag(D)-L
 
-    N = 30
+    N = 30.0
+
     C = (np.sin(2*np.pi*np.arange(N, dtype='f')/N + vec(2,-3,4))+1)*15
-    Lambda = 1.0
 
-    def findOpt(Lambda,C):
-        n,m = C.shape  # nodes,datas = n,m
-        e = np.empty((m,)*n,'f')
-        from itertools import product
-        for inds in product(range(m),repeat=n):
-            x = np.asarray(inds)
-            e[inds] = x.T.dot(L.dot(x))+Lambda*(np.sum(C[range(n),inds]))
-        x_opt = np.unravel_index(np.argmin(e), e.shape)
-        print Lambda, x_opt, e[x_opt]
-        return x_opt
-    x_opt = findOpt(Lambda,C)
+    def make_func(offset):
+        return lambda x: (np.sin(2*np.pi*x/N + offset)+1)*15
+    def make_func_reg(old, Lambda, theta, offset):
+        return lambda x: Lambda*old(x)+(x-offset)**2/theta
+    def find_root(func,x0):
+        return scipy.optimize.minimize(func, x0, args=(), method='CG').x
+    Cf = [make_func(offset) for offset in [2.,-3.,4.]]
 
-    def evalE(x,y):
-        return x.T.dot(L.dot(x)) + Lambda*np.sum((x-y)**2)
 
-    def findOptl2(Lambda,y):
-        n = y.shape[0]  # nodes,datas = n,m
-        m = 30
-        e = np.empty((m,)*n,'f')
-        from itertools import product
-        for inds in product(range(m),repeat=n):
-            x = np.asarray(inds)
-            e[inds] = evalE(x,y)
-        x_opt = np.unravel_index(np.argmin(e), e.shape)
-        print Lambda,y,x_opt
-        return x_opt
-    x_opt = findOptl2(Lambda, y)
+    Lambda = 10
 
     def solveLinear(y, Lambda=Lambda, L=L):
         '''solve matrix equation: (λI+A)*x = y, for argmin[x'Ax +λ(x-y)**2]'''
@@ -372,13 +355,13 @@ if __name__ == "__main__":
             x = np.linalg.solve(A, y)
         return x
 
-
     def solveFixIter(x, y, Lambda=Lambda, A=A, D=D, it_num=10):
         if 1:
             c0 = Lambda/(Lambda+D)
             c1 = 1/(Lambda+D)
             for it in range(it_num):
                 x = c0*y + c1*A.dot(x)
+            return x
         else:
             '''slower version'''
             nbrs = [np.where(A[v])[0] for v in range(len(x))]
@@ -388,30 +371,85 @@ if __name__ == "__main__":
                     '''neighbor u'''
                     c = [ x[u] for u in nbrs[v] ]
                     x[v] = Lambda/(Lambda+D[v])*y[v] + 1/(Lambda+D[v])*np.sum(c)
-        return x
+            return x
+
+    def test_solveFixIter():
+        def evalE(x,y):
+            return x.T.dot(L.dot(x)) + Lambda*np.sum((x-y)**2)
+        def findOptl2(Lambda,y):
+            n = y.shape[0]  # nodes,datas = n,m
+            m = 30
+            e = np.empty((m,)*n,'f')
+            from itertools import product
+            for inds in product(range(m),repeat=n):
+                x = np.asarray(inds)
+                e[inds] = evalE(x,y)
+            x_opt = np.unravel_index(np.argmin(e), e.shape)
+#            print Lambda,y,x_opt
+            return np.array(x_opt)
+        x_t = findOptl2(Lambda, y)
+        x_e = solveFixIter(y, y, Lambda, it_num=10)
+        print 'Lambda & y:',Lambda, y
+        print 'reference:', x_t, evalE(x_t, y)
+        print 'estimated:', x_e, evalE(x_e, y)
 
     x = np.argmin(C,axis=-1).astype('f')
     y = x.copy()
 
-    f,a = plt.subplots(1,1,num='ADMM');a.clear()
-    a.plot(C.T)
+    f,a = plt.subplots(1,1,num='cost-volume denoise');a.clear()
     a.set_xlim(-1,30)
-    l1,l2,l3 = (a.axvline(foo,0,2,c=color) for foo,color in zip(vec(x),['b','g','r']))
+    curset0 = [a.plot(data)[0] for data,color in zip(C,'bgr')]
+    curset1 = [a.plot(data,ls='--')[0] for data,color in zip(C,'bgr')]
+    lset1 = [a.axvline(obj,0,2) for obj,color in zip(vec(x),'bgr')]
+    lset2 = [a.axvline(obj,0,2, ls='--') for obj,color in zip(vec(y),'bgr')]
+
 
     beta = 1e-2
-    theta_init,theta_end = 1e2,1e-3
+    theta_init,theta_end = 1e2,5e-2
     theta = theta_init
     n = 0
-    while theta > theta_end:
-        [foo.set_xdata(bar) for foo,bar in zip([l1,l2,l3],vec(x))]
+    def evalE(*x):
+        x = np.asarray(x).ravel()
+        if 0:
+            return x.T.dot(L.dot(x))+Lambda*(np.sum(C[range(len(x)),np.round(x).astype('i')]))
+        else:
+            return x.T.dot(L.dot(x))+Lambda*(np.sum([obj(v) for obj,v in zip(Cf,vec(x)) ]))
 
-        x = solveFixIter(x, y, 1/theta)
-#        x = solveLinear(y, 1/theta)
-        y = np.argmin(Lambda*C+(np.arange(N)-vec(x))**2/theta, axis=-1)
+    while theta > theta_end:
+
+        x = solveFixIter(x, y, 1/theta)     # x = solveLinear(y, 1/theta)
+
+        Cnew = Lambda*C+(np.arange(N)-vec(x))**2/theta
+        if 0:
+            y = np.argmin(Cnew, axis=-1)
+        else:
+            Cfnew = [make_func_reg(old, Lambda, theta, offset) for old,offset in zip(Cf,vec(x))]
+            y = [find_root(func, x0) for func,x0 in zip(Cfnew, vec(y))]
+            y = np.asarray(y).ravel()
+            del Cfnew[:]
+
+        [obj.set_xdata(bar) for obj,bar in zip(lset2,vec(y))]
+        [obj.set_xdata(bar) for obj,bar in zip(lset1,vec(x))]
+        [obj.set_ydata(bar) for obj,bar in zip(curset1,Cnew)]
+        plt.pause(0.5)
+#        plt.waitforbuttonpress()
 
         theta = theta*(1.0-beta*n)
         n += 1
-        print x
-        plt.pause(0.01)
-#        plt.waitforbuttonpress()
+        print x, evalE(x)
+
+    def test_optimization():
+        def findOpt(Lambda,C):
+            n,m = C.shape  # nodes,datas = n,m
+            e = np.empty((m,)*n,'f')
+            from itertools import product
+            for inds in product(range(m),repeat=n):
+                e[inds] =  evalE(inds)
+            x_opt = np.unravel_index(np.argmin(e), e.shape)
+            print Lambda, x_opt, e[x_opt]
+            return x_opt
+        x_opt=findOpt(Lambda,C)
+        [obj.set_xdata(bar) for obj,bar in zip(lset2,vec(x_opt))]
+
+
 

@@ -5,6 +5,7 @@ Created on Tue May 31 09:42:37 2016
 
 @author: kaihong
 """
+from __future__ import division
 import sys
 
 import numpy as np
@@ -151,7 +152,7 @@ if __name__ == "__main__":
             y,x = np.where(mask)
             self.py, self.px = y,x
             self.p_cnt = len(x)
-
+            self.v = []
             ''' 2. corresponding back-projected 3D point'''
             self.P = np.vstack([(x-cx)/fx,
                                 (y-cy)/fy,
@@ -188,7 +189,7 @@ if __name__ == "__main__":
         def searchEPL(self, f1, rmin=None,rmax=None,win_width=4):
             rGc = relPos(self.wGc, f1.wGc)
             cGr = inv(rGc)
-            match,err,var = searchEPL(self.px, self.py, self.im, f1.im, rGc, rmin, rmax, win_width)
+            match,err,var = searchEPL(self.px, self.py, self.im, f1.im, rGc, rmin, rmax, win_width, False, self.v)
             d = calcInvDepth(self.px, self.py, match[0], match[1], cGr)
             return d,err,var
 
@@ -397,7 +398,7 @@ if __name__ == "__main__":
         assert( np.allclose(td, 1.0/d2))
 
     @timing
-    def searchEPL(px, py, imr, imc, rGc, rmin=None,rmax=None,win_width=4, debug=False):
+    def searchEPL(px, py, imr, imc, rGc, rmin=None,rmax=None, win_width=4, debug=False, vlist=None):
         # px, py, imr, imc, rGc, win_width, debug, rmin, rmax= pref[0], pref[1], f0.im, f1.im, getG(f0,f1), 4, True, None,None
         px,py = np.atleast_1d(px, py)
 
@@ -405,7 +406,7 @@ if __name__ == "__main__":
         pb,dxy,dmax,dmin,dxy_local,var = calcEpl(px, py, rGc,rmin,rmax)
         best = np.empty(node_cnt,'i')
         cost = np.empty(node_cnt,'f')
-        if 0 or debug:
+        if 1 or debug:
             for n in xrange(node_cnt):
                 print n
                 p0 = vec(px[n],py[n])
@@ -417,6 +418,10 @@ if __name__ == "__main__":
                 sam_cnt = int(sam_max-sam_min)+1
                 if sam_cnt<1:
                     best[n] = -1
+                    try:
+                        vlist.append(np.array([]))
+                    except:
+                        pass
                     continue
 
                 cur_pos = vec(pb[:,n]) + vec(dxy[:,n])*np.arange(sam_min-win_width, sam_max+win_width+1)
@@ -426,7 +431,7 @@ if __name__ == "__main__":
                 for i in xrange(sam_cnt):
                     diff = ref_samples - cur_samples[i:i+2*win_width+1]
                     err[i] = (diff*diff).sum()
-
+                vlist.append(err)
                 mininum = np.nanargmin(err)
                 best[n] = sam_min+mininum  #np.argpartition(err, 5)
                 cost[n] = err[mininum]
@@ -579,7 +584,7 @@ if __name__ == "__main__":
     refid = 0
 
     fs = []
-    seq = [refid, 1, 2, 3, 4,5,6,7,8,9]
+    seq = [refid, 9, 1, 2, 3, 4,5,6,7,8]
     for fid in seq:
         try:
             f = Frame(frames[fid], wGc[fid],Z=Zs[fid])
@@ -592,8 +597,9 @@ if __name__ == "__main__":
         test_calcEpl()
         test_EPLMatch()
 
-    if 1:
 
+
+    if 0:
         ds,vs,es = [],[],[]
         for i in range(1,len(fs)):
             d, err, var = f0.searchEPL(fs[i], rmin=iD(5), rmax=iD(0.1), win_width=3) #
@@ -628,7 +634,7 @@ if __name__ == "__main__":
             d_result = np.full_like(f0.im, np.nan,'f')
             d_result[f0.py, f0.px] = d
             df = scipy.ndimage.filters.generic_filter(d_result, np.nanmedian, size=15)
-            plotxyzrgb(f0.makePC(df[f0.py, f0.px], 0, 5))
+            plotxyzrgb(f0.makePC(1.0/df[f0.py, f0.px], 0, 5))
 
     ''' plot all image'''
     if 0:
@@ -651,17 +657,67 @@ if __name__ == "__main__":
 #            sp.plot(pref[0], pref[1], 'r.', ms=2)
         fig.tight_layout()
 #%%
+    if 1:
+        d, err, var = f0.searchEPL(f1, rmin=iD(5), rmax=iD(0.1), win_width=3) #
+        I = f0.getIncidenceMat()
+        L = I.transpose().dot(I)
+        D = L.diagonal()
+        A = scipy.sparse.diags(D) - L
 
-    np.array([ v[pid] for v in vs ])
+        Lambda = 1.0
+
+        def solveFixIter(x, y, Lambda=1.0, A=A, D=D, it_num=10):
+            c0 = Lambda/(Lambda+D)
+            c1 = 1/(Lambda+D)
+            for it in range(it_num):
+                x = c0*y + c1*A.dot(x)
+            return x
+
+        def searchC(f, Lambda, theta, d, cGr=getG(f1, f0)):
+            xr,yr = f.px, f.py
+            Rcr,Tcr = cGr[:3,:3],cGr[:3,3]
+
+            H = K.dot(Rcr.dot(inv(K)))
+            Pinf = H.dot(projective(xr, yr))  # Pinf=K.dot(Rcr.dot(backproject(xr, yr))
+            Pe = vec(K.dot(Tcr))
+
+            dxy_raw = -Pe[2]/Pinf[2]*Pinf[:2]+Pe[:2]   # 2xN
+            dxy_norm = np.linalg.norm(dxy_raw, axis=0)   # N
+
+            x = d/(Pinf[2] + d*Pe[2])*dxy_norm
+            y = np.empty_like(x)
+
+            Cost = f.v
+            for pid in xrange(f.p_cnt):
+                m = Cost[pid].shape[0]
+                cost = Lambda*Cost[pid] + (vec(range(m))-x[pid])**2/theta
+                y[pid] = np.argmin(cost)
+
+            a = y/dxy_norm
+            dinv = a*Pinf[2]/(1-a*Pe[2])   # λ/(Pinf[2] + λPe1[2])*dxy_norm = v
+            return dinv
+
+        p0 = 37838
+        p1 = p0+1
 
 
+        beta = 1e-2
+        theta_init,theta_end = 1e1,1e-3
+        theta = theta_init
+        n = 0
+        x = d.copy()
+        y = x.copy()
+        while theta > theta_end:
+            x = solveFixIter(x, y, Lambda=1.0/theta)
+            y = searchC(f0, Lambda, theta, x)
 
+            theta = theta*(1.0-beta*n)
+            n += 1
+            print n
 
+            plotxyzrgb(f0.makePC(1.0/x,-np.inf,np.inf))
 
-
-
-
-
+        plotxyzrgb(f0.makePC(1.0/d,-np.inf,np.inf))
 
 
 
