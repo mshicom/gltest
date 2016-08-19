@@ -132,23 +132,26 @@ if __name__ == "__main__":
             self.im = np.ascontiguousarray(img.astype('f')/255.0)
             self.wGc = wGc.copy()
             self.Z = Z
-
-            self.extractPts()
+            self.py, self.px = None,None
 
         def extractPts(self, gthreshold=None):
             ''' 1.extract pixels with significant gradients'''
             h,w = self.im.shape
 
-            grad,orin = scharr(self.im)
-            self.grad, self.orin = grad,orin
+#            grad,orin = scharr(self.im)
+#            self.grad, self.orin = grad,orin
+            dx,dy = np.gradient(self.im)
+            grad = np.sqrt(dx**2 + dy**2)
+            self.grad, self.orin = grad, np.arctan2(dy,dx)
 
             if gthreshold is None:
                 gthreshold = np.percentile(grad, 80)
             u, v = np.meshgrid(range(w),range(h))
-            border_width = 40
-            mask = reduce(np.logical_and, [grad>gthreshold,
-                                           w-border_width>u, u>=border_width,
-                                           h-border_width>v, v>=border_width]) # exclude border pixels
+            border_width = 20
+            mask = reduce(np.logical_and, [w-border_width>u, u>=border_width,
+                                           h-border_width>v, v>=border_width]) #, grad>gthreshold exclude border pixels
+#            mask = conditions(189>u, u>107, 293>v, v>225) #, grad>gthreshold exclude border pixels
+
             y,x = np.where(mask)
             self.py, self.px = y,x
             self.p_cnt = len(x)
@@ -161,7 +164,11 @@ if __name__ == "__main__":
 #            patt = [(y,x),(y-2,x),(y-1,x+1),(y,x+2),(y+1,x+1),(y+2,x),(y+1,x-1),(y,x-2),(y-1,x-1)]
 #            self.v = np.vstack([self.im[ind].astype('i2') for ind in patt]).T
             ''' 4. Neighbors Info'''
-#            self.nbrs = self.setNeighborsInfo(mask)
+#            self.nbrs = self.calcNeighborsInfo(mask)
+            I = self.getIncidenceMat(False)
+            D = (I.transpose().dot(I)).diagonal()
+            self.trimPts(D!=0)
+
 
         def trimPts(self, mask, d=None):
             var_list = (self.px, self.py, self.P)
@@ -186,12 +193,13 @@ if __name__ == "__main__":
             P1 = K.dot(G[0:3,0:3].dot(P0)+G[0:3,3][:,np.newaxis])
             return P1[:2]/P1[2]
 
-        def searchEPL(self, f1, rmin=None,rmax=None,win_width=4):
+        def searchEPL(self, f1, dmin=None,dmax=None,win_width=4):
+            if self.px is None:
+                self.extractPts()
             rGc = relPos(self.wGc, f1.wGc)
-            cGr = inv(rGc)
-            match,err,var = searchEPL(self.px, self.py, self.im, f1.im, rGc, rmin, rmax, win_width, False, self.v)
-            d = calcInvDepth(self.px, self.py, match[0], match[1], cGr)
-            return d,err,var
+            d,var = searchEPL(self.px, self.py, self.im, f1.im, rGc, dmin, dmax, win_width, False)
+            self.v = searchEPL.vlist
+            return d,var
 
         def makePC(self, depth, vmin=0, vmax=10):
             vm_ind, = np.where(conditions(depth>vmin,  depth<vmax))
@@ -205,7 +213,7 @@ if __name__ == "__main__":
             mask_im[self.py, self.px] = True
             return mask_im
 
-        def setNeighborsInfo(self):
+        def calcNeighborsInfo(self):
             mask_image = self.getPtsMask()
             px, py = self.px, self.py
             node_cnt = self.p_cnt
@@ -216,48 +224,64 @@ if __name__ == "__main__":
             id_LUT = np.empty_like(mask_image, 'i4')
             id_LUT[py,px] = range(node_cnt)      # lookup-table of index number for valid pixels
             for p_id, (p_x,p_y) in enumerate(zip(px, py)):
-                fcoord = [(p_y-1,p_x),(p_y,p_x-1),(p_y-1,p_x-1),(p_y-1,p_x+1)]
+                fcoord = [(p_y-1,p_x),(p_y,p_x-1)] #,(p_y-1,p_x-1),(p_y-1,p_x+1)
                 fnbrs = [id_LUT[coord] for coord in fcoord if mask_image[coord]]
                 if p_id-1 not in fnbrs:
                     fnbrs.append(p_id-1)
                 edges_forward[p_id].extend(fnbrs)
 
-                bcoord = [(p_y+1,p_x),(p_y,p_x+1),(p_y+1,p_x+1),(p_y+1,p_x-1)]
+                bcoord = [(p_y+1,p_x),(p_y,p_x+1)]#,(p_y+1,p_x+1),(p_y+1,p_x-1)
                 bnbrs = [id_LUT[coord] for coord in bcoord if mask_image[coord]]
                 if p_id+1 not in bnbrs:
                     fnbrs.append(p_id+1)
                 edges_backward[p_id].extend(bnbrs)
             return edges_forward, edges_backward
 
-        def getIncidenceMat(self):
+        def getIncidenceMat(self, makelist=False):
             mask_im = self.getPtsMask()
 
             node_cnt = self.p_cnt
             id_LUT = np.empty_like(mask_im, 'i4')
             id_LUT[mask_im] = range(node_cnt)      # lookup-table of index number for valid pixels
+
             edges = []
+            nbr_list = [[] for _ in xrange(node_cnt)]
+            nbr_cnt = np.zeros(node_cnt,'i')
             for p_id in range(node_cnt):
                 p_x, p_y = self.px[p_id], self.py[p_id]
                 degree = 0
+                nbr = nbr_list[p_id]
                 '''diagonal edge'''
                 if 0:
                     if mask_im[p_y-1, p_x+1]:
                         edges.append([p_id, id_LUT[p_y-1, p_x+1]]); degree += 1
+                        nbr.append(id_LUT[p_y-1, p_x+1])
                     if mask_im[p_y-1, p_x-1]:
                         edges.append([p_id, id_LUT[p_y-1, p_x-1]]); degree += 1
+                        nbr.append(id_LUT[p_y-1, p_x-1])
 
                 if mask_im[p_y-1, p_x]:
                     edges.append([p_id, id_LUT[p_y-1,  p_x ]]); degree += 1
+                    nbr.append(id_LUT[p_y-1, p_x])
                 if mask_im[p_y, p_x-1]:
                     edges.append([p_id, id_LUT[ p_y,  p_x-1]]); degree += 1
+                    nbr.append(id_LUT[p_y, p_x-1])
+                nbr_cnt[p_id] = degree
 
             edge_cnt = len(edges)
-            row_ind = np.tile(np.arange(edge_cnt)[:,np.newaxis],2).ravel()
-            col_ind = np.array(edges).ravel()
-            data = np.tile(np.array([1,-1]), edge_cnt)
-            incidence_matrix = sparse.csr_matrix((data,(row_ind,col_ind)), (len(edges),node_cnt),'i4')
+            row_ind = np.tile(np.arange(edge_cnt)[:,np.newaxis],2).ravel()  # [0,0,1,1,...] edge idx, each node-pair share the same row
+            col_ind = np.array(edges).ravel()                               # [i1,o1,i2,o2,...] node linear idx, i for in, o for out
+            data = np.tile(np.array([-1,1]), edge_cnt)                      # in -1 out 1
 
-            return incidence_matrix      # np.array(edges,'i4'), edges array, each row represent an edge
+            incidence_matrix = sparse.csr_matrix((data,(row_ind,col_ind)), (len(edges),node_cnt),'i4') # each row represent an edge
+            if makelist:
+                enode_out = np.array(zip(*edges)[0])
+                return incidence_matrix, nbr_list, nbr_cnt, enode_out
+            else:
+                return incidence_matrix
+
+        def getId(self, x,y):
+            return np.where(conditions(self.px==x,self.py==y))[0]
 
     def getG(f0,f1):
         '''return 1G0, which p1 = 1G0 * p0  '''
@@ -269,196 +293,123 @@ if __name__ == "__main__":
         rFc = inv(K.T).dot(skew(t)).dot(R).dot(inv(K))
         return rFc
 
-    def calcEpl(xr,yr,rGc,rmin=None,rmax=None,K=K):
-        ''' suppose (X, X') are the left and right image pixel pairs,
-            given the relative camera pos (R,T), X'=(R,T).dot(X), we have a ray X'∈R3:
-                X' = K*(R*inv(K)*X*z + T)
-                   = K*R*inv(K)*X + 1/z*K*T
-                   =    Pinf[1:3] +   λ*Pe[1:3]  (λ=1/z)
-            The projected image point x'=[a,b,1] of X' will be:
-                x' = (Pinf[1:2] + λ*Pe[1:2])/(Pinf[3]+ λ*Pe[3]) (eq.1)
-            but what we want is x' in this form:
-                x' =  Pinf[1:2]/Pinf[3] + λ*dxy[1:2]   (eq.2)
-            putting eq.1 & eq.2 together and solve for dxy, we get:
-                  dxy[1:2] = 1/(Pinf[3]+ λ*Pe[3]) * (-Pe[3]/Pinf[3]*Pinf[1:2] + Pe[1:2])   (eq.3)
-            so normalize(dxy) = normalize(-Pe[3]/Pinf[3]*Pinf[1:2] + Pe[1:2]),  if (Pinf[3]+ λ*Pe[3])>0,
-                              = -normalize(-Pe[3]/Pinf[3]*Pinf[1:2] + Pe[1:2]), otherwise.
-            for (Pinf[3]+ λ*Pe[3])>0 ,we have:
-                λ > 0 > -Pinf[3]/Pe[3],  if Pe[3]>0;
-                -Pinf[3]/Pe[3] > λ > 0,  otherwise
-        '''
-        # xr,yr,rGc,rmin,rmax = pref[0], pref[1], getG(f0,f1), None, None
-        # xr,yr,rGc,rmin,rmax = f0.px, f0.py, getG(f0,f1), None, None
-        xr,yr = np.atleast_1d(xr,yr)
+    class EpilineCalculator(object):
+        def __init__(self, xr, yr, rGc, K):
+            ''' 1. suppose (X, X') are the left and right image pixel pairs,
+                given the relative camera pos (R,T), X'=(R,T).dot(X), we have a ray X'∈R3:
+                    X' = K*(R*inv(K)*X*z + T)
+                       = K*R*inv(K)*X + 1/z*K*T
+                       =    Pinf[1:3] +   λ*Pe[1:3]  (λ:=1/z)
+                The projected image point x' of X' will be:
+                    x' = (Pinf[1:2] + λ*Pe[1:2])/(Pinf[3]+ λ*Pe[3])     (eq.1)
+                but what we want is x' in this form:
+                    x' =  Pinf[1:2]/Pinf[3] + λ*dxy[1:2]                (eq.2a)
+                       =  Pinf[1:2]/Pinf[3] + v*normalize(dxy[1:2])     (eq.2b)
+                putting eq.1 & eq.2a together and solve for dxy, we get:
+                      dxy[1:2] = 1/(Pinf[3]+ λ*Pe[3]) * (-Pe[3]/Pinf[3]*Pinf[1:2] + Pe[1:2])   (eq.3)
+                so normalize(dxy) = normalize(-Pe[3]/Pinf[3]*Pinf[1:2] + Pe[1:2]),  if (Pinf[3]+ λ*Pe[3])>0,
+                                  = -normalize(-Pe[3]/Pinf[3]*Pinf[1:2] + Pe[1:2]), otherwise.
+                2.for (Pinf[3]+ λ*Pe[3])>0, i.e. point is in front of the cur camera, we have:
+                    if Pe[3]>0,  λ > 0 > -Pinf[3]/Pe[3], then λ_max=inf;
+                    if Pe[3]<0,  -Pinf[3]/Pe[3] > λ > 0, then λ_max=-Pinf[3]/Pe[3].
 
-        Rrc,Trc = rGc[:3,:3],rGc[:3,3]
-        Rcr,Tcr = Rrc.T, -Rrc.T.dot(Trc)
+                3. Also from eq.2 we have:
+                    λ*dxy[1:2] = v*normalize(dxy[1:2]),
+                if λ is given, then
+                    λ/(Pinf[3] + λ*Pe[3])*dxy_norm = v,             (eq.4)
+                equivalently, if v is given, then
+                    λ = a*Pinf[3]/(1- a*Pe[3]),  a:=v/dxy_norm   (eq.5)
 
-        Pr = projective(xr, yr)     # 3xN
-        Pe0 = vec(K.dot(Trc))           # 3x1
-        dxy_local = normalize(-Pe0[2]/Pr[2]*Pr[:2]+Pe0[:2])  # 2xN
+                4. if x' is given, from eq.1:
+                    x'[1:2]*Pe[3]*λ - Pe[1:2]*λ = Pinf[1:2] - x'[1:2]*Pinf[3]
+                    λ = (Pinf[1:2] - x'[1:2]*Pinf[3])/(x'[1:2]*Pe[3] - Pe[1:2])
+            '''
+            xr,yr = np.atleast_1d(xr,yr)
 
-        H = K.dot(Rcr.dot(inv(K)))
-        Pinf = H.dot(Pr)  # <= projection of points at infinity, Pinf=K.dot(Rcr.dot(backproject(xr, yr))
-        nPinf = Pinf[:2]/Pinf[2]
-        Pe1 = vec(K.dot(Tcr))
+            Rrc,Trc = rGc[:3,:3],rGc[:3,3]
+            Rcr,Tcr = Rrc.T, -Rrc.T.dot(Trc)
 
-        dxy_raw = -Pe1[2]/Pinf[2]*Pinf[:2]+Pe1[:2]   # 2xN
-        dxy_norm = np.linalg.norm(dxy_raw, axis=0)   # N
-        dxy = dxy_raw/dxy_norm
+            Pr = projective(xr, yr)                                 # 3xN
+            Pe0 = vec(K.dot(Trc))                                   # 3x1
+            dxy_local = normalize(-Pe0[2]/Pr[2]*Pr[:2]+Pe0[:2])     # 2xN
 
-        '''given λ=[rmin,rmax] and image boundary, calc epiline length.
-           By definition, the two endpoints of epiline are:
-               [dxy_min,dxy_max] := [vmin,vmax]*normalize(dxy)
-           from eq.3 we have:
-               [dxy_min,dxy_max] = [λ_min, λ_max]*dxy[1:2]
-                                 = [λ_min, λ_max]*right-side-of-eq3
-           putting them together we can solve for vmin,vmax
-               λ/(Pinf[3] + λ*Pe[3])*dxy_norm = v
-        '''
-        if rmin is None:
-            rmin = np.zeros_like(xr)
-            vmin = np.zeros_like(xr)
-        else:
-            dx_min = dxy_raw[0]/(Pinf[2]/rmin + Pe1[2]) #
-            vmin = dx_min/dxy[0]
+            Pinf = (K.dot(Rcr.dot(inv(K)))).dot(Pr)
+            nPinf = Pinf[:2]/Pinf[2]
+            Pe1 = vec(K.dot(Tcr))
 
-        x_limit = np.maximum(-nPinf[0]/dxy[0], (w-nPinf[0])/dxy[0])   # Pinf.x + x_limit*dx = {0,w}
-        y_limit = np.maximum(-nPinf[1]/dxy[1], (h-nPinf[1])/dxy[1])   # Pinf.y + y_limit*dy = {0,h}
-        vmax = np.minimum(x_limit, y_limit)             # N
-        if not rmax is None:
-            dx_max = dxy_raw[0]/(Pinf[2]/rmax + Pe1[2])
-            vmax = np.minimum(dx_max/dxy[0], vmax)
-        # update actual λ_max given vmax
-        a = vmax/dxy_norm
-        rmax = a*Pinf[2]/(1-a*Pe1[2])   # λ/(Pinf[2] + λPe1[2])*dxy_norm = v
-        var = (rmax-rmin)/(vmax-vmin)
-        return nPinf[:2], dxy, vmax, vmin, dxy_local, var**2
+            dxy_raw = -Pe1[2]/Pinf[2]*Pinf[:2]+Pe1[:2]              # 2xN
+            dxy_norm = np.linalg.norm(dxy_raw, axis=0)              # N
+            dxy = dxy_raw/dxy_norm                                  # 2xN
 
-    def calcInvDepth(xr,yr,xc,yc,cGr,K=K):
-        '''Once we have x'[1:2], puting it in eq.1 and solve for λ, we get:
-                λ = (Pinf[1:2] - Pinf[3]*x'[1:2])/(Pe[3]*x'[1:2]-Pe[1:2])
-        '''
-        # xr,yr,cGr,(xc,yc) = f0.px, f0.py, getG(f1,f0),trueProj(f0.px, f0.py, getG(f1,f0), Zr=f0.Z)
-        xr,yr,xc,yc = np.atleast_1d(xr,yr,xc,yc)
-        Rcr,Tcr = cGr[:3,:3],cGr[:3,3]
+            self.VfromD = lambda      d,ind=slice(None): d/(Pinf[2,ind] + d*Pe1[2])*dxy_norm[ind]
+            self.VfromX = lambda     xc,ind=slice(None): (xc - nPinf[0,ind])/dxy[0,ind]
+            self.VfromY = lambda     yc,ind=slice(None): (yc - nPinf[1,ind])/dxy[1,ind]
 
-        H = K.dot(Rcr.dot(inv(K)))
-        Pinf = H.dot(projective(xr, yr))  # Pinf=K.dot(Rcr.dot(backproject(xr, yr))
-        Pe = vec(K.dot(Tcr))
+            self.DfromV = lambda      v,ind=slice(None): v*Pinf[2,ind]/(dxy_norm[ind] - v*Pe1[2])
+            self.DfromX = lambda     xc,ind=slice(None): (Pinf[0,ind] - xc*Pinf[2,ind])/(xc*Pe1[2]-Pe1[0])
+            self.DfromY = lambda     yc,ind=slice(None): (Pinf[1,ind] - yc*Pinf[2,ind])/(yc*Pe1[2]-Pe1[1])
 
-        dinv = (Pinf[0] - Pinf[2]*xc)/(Pe[2]*xc-Pe[0])     # or (Pinf[1] - Pinf[2]*yc)/(Pe[2]*yc-Pe[0])
-        return dinv
+            self.XYfromV = lambda     v,ind=slice(None): ( nPinf[0,ind] + v*dxy[0,ind], nPinf[1,ind] + v*dxy[1,ind])
+            self.XYfromD = lambda     d,ind=slice(None): ((Pinf[0,ind]+d*Pe1[0])/(Pinf[2,ind]+d*Pe1[2]), \
+                                                          (Pinf[1,ind]+d*Pe1[1])/(Pinf[2,ind]+d*Pe1[2]))
+            self.XYfromV_local=lambda v,ind=slice(None): (Pr[0,ind]+v*dxy_local[0,ind], Pr[1,ind]+v*dxy_local[1,ind])
 
-    def calcInvDepth2(xr,yr,v,cGr,K=K):
-        # xr,yr,cGr = f0.px, f0.py, getG(f1,f0)
-        xr,yr = np.atleast_1d(xr,yr)
-        Rcr,Tcr = cGr[:3,:3],cGr[:3,3]
+            def getDlimt():
+                limit0 = -Pinf[2]/Pe1[2] if Pe1[2]<0 else np.inf
+                limit1 = np.maximum(self.DfromX(5), self.DfromX(w-5))   # border is extended a little bit, i.e. 5 pixels
+                limit2 = np.maximum(self.DfromY(5), self.DfromY(h-5))
+                return reduce(np.minimum, [limit0, limit1, limit2])
+            self.getDlimt = getDlimt
 
-        H = K.dot(Rcr.dot(inv(K)))
-        Pinf = H.dot(projective(xr, yr))  # Pinf=K.dot(Rcr.dot(backproject(xr, yr))
-        Pe = vec(K.dot(Tcr))
+            self.dxy = dxy
+            self.dxy_local = dxy_local
+            self.nPinf = nPinf
 
-        dxy_raw = -Pe[2]/Pinf[2]*Pinf[:2]+Pe[:2]   # 2xN
-        dxy_norm = np.linalg.norm(dxy_raw, axis=0)   # N
-        a = v/dxy_norm
-        dinv = a*Pinf[2]/(1-a*Pe[2])   # λ/(Pinf[2] + λPe1[2])*dxy_norm = v
-        return dinv
 
-    def test_calcEpl():
-        f,a = plt.subplots(1, 1, num='test_F')
+    def test_EpilineCalculator():
+        f,a = plt.subplots(1, 1, num='test_EpilineCalculator')
         a.imshow(sim(f0.im, f1.im))
 
         pref = np.round(plt.ginput(1, timeout=-1)[0])
         a.plot(pref[0], pref[1],'r.')
 
-        cGr = relPos(f1.wGc, f0.wGc)
+        cGr = getG(f1,f0)
         Z = np.linspace(0.5, 10.0, 40)
         pcur = K.dot(transform(cGr, backproject(pref[0], pref[1])*Z))
         pcur /= pcur[2]
         a.plot(pcur[0]+640, pcur[1],'b.')
 
-        pb,dxy,dmax,dmin,dxy_local,var = calcEpl(pref[0], pref[1], inv(cGr),rmin=iD(10),rmax=iD(0.5)) #
-        pmax = pb+dmax*dxy
-        pmin = pb+dmin*dxy
+        ec = EpilineCalculator(pref[0], pref[1], getG(f0,f1), K) #
+        pmin = ec.XYfromV(0)
+        pmax = ec.XYfromD(ec.getDlimt())
         a.plot([pmin[0]+640,pmax[0]+640], [pmin[1],pmax[1]],'g-')
-#        a.plot([pcur[0], pcur[0]+100*dxy_local[0]], [pcur[1],pcur[1]+100*dxy_local[1]],'b-')
+
         plt.pause(0.01)
 
-    def test_calcInvDepth():
-        cGr = getG(f1,f0)
+        ec2 = EpilineCalculator(f0.px, f0.py, getG(f0,f1), K) #
         tx,ty = trueProj(f0.px, f0.py, cGr, Zr=f0.Z)
-        td = sample(f0.Z, f0.px, f0.py)
-        d = calcInvDepth(f0.px, f0.py,tx,ty,cGr)
-        assert( np.allclose(td, 1.0/d))
-
-        pb,dxy,dmax,dmin,dxy_local,var = calcEpl(f0.px, f0.py, inv(cGr)) #
-        v = (tx - pb[0])/dxy[0]
-        d2 = calcInvDepth2(f0.px, f0.py, v, cGr)
-        assert( np.allclose(td, 1.0/d2))
+        td = 1.0/sample(f0.Z, f0.px, f0.py)
+        d = ec2.DfromX(tx); assert( np.allclose(td, d) )
+        v = ec2.VfromD(td); assert( np.allclose(v, ec2.VfromX(tx)) )
+        xy = ec2.XYfromD(td); assert( np.allclose(xy[0], tx) and np.allclose(xy[1], ty))
 
     @timing
-    def searchEPL(px, py, imr, imc, rGc, rmin=None,rmax=None, win_width=4, debug=False, vlist=None):
-        # px, py, imr, imc, rGc, win_width, debug, rmin, rmax= pref[0], pref[1], f0.im, f1.im, getG(f0,f1), 4, True, None,None
+    def searchEPL(px, py, imr, imc, rGc, dmin=0, dmax=np.inf, win_width=4, debug=False):
+        # px, py, imr, imc, rGc, win_width, debug, dmin, dmax= pref[0], pref[1], f0.im, f1.im, getG(f0,f1), 4, True, None,None
         px,py = np.atleast_1d(px, py)
 
+        ec = EpilineCalculator(px, py, rGc, K)
+        dmax = np.minimum(dmax, ec.getDlimt())                  # Nx1
+        vmax = np.floor(ec.VfromD(dmax)).astype('i4')           # Nx1
+        vmin = np.ceil( ec.VfromD(dmin)).astype('i4')           # Nx1
+        pb,dxy,dxy_local = ec.nPinf, ec.dxy, ec.dxy_local
+        var = (dmin-dmax)/(vmax-vmin)
+
         node_cnt = len(px)
-        pb,dxy,dmax,dmin,dxy_local,var = calcEpl(px, py, rGc,rmin,rmax)
         best = np.empty(node_cnt,'i')
-        cost = np.empty(node_cnt,'f')
-        if 1 or debug:
-            for n in xrange(node_cnt):
-                print n
-                p0 = vec(px[n],py[n])
+        searchEPL.rlist, searchEPL.vlist,searchEPL.ec = [],[],ec
 
-                ref_pos = p0 - vec(dxy_local[:,n])*np.arange(-win_width, win_width+1) # TODO: why minus?
-                ref_samples = sample(imr, ref_pos[0], ref_pos[1])
-
-                sam_min,sam_max = np.floor(dmin[n]),np.ceil(dmax[n])
-                sam_cnt = int(sam_max-sam_min)+1
-                if sam_cnt<1:
-                    best[n] = -1
-                    try:
-                        vlist.append(np.array([]))
-                    except:
-                        pass
-                    continue
-
-                cur_pos = vec(pb[:,n]) + vec(dxy[:,n])*np.arange(sam_min-win_width, sam_max+win_width+1)
-                cur_samples = sample(imc, cur_pos[0], cur_pos[1])
-                err = np.empty(sam_cnt,'f')
-
-                for i in xrange(sam_cnt):
-                    diff = ref_samples - cur_samples[i:i+2*win_width+1]
-                    err[i] = (diff*diff).sum()
-                vlist.append(err)
-                mininum = np.nanargmin(err)
-                best[n] = sam_min+mininum  #np.argpartition(err, 5)
-                cost[n] = err[mininum]
-
-                if debug:
-                    ''' obtain or create plotting handle'''
-                    f = plt.figure(num='epl match')
-                    if f.axes:
-                        al,ar,ab = tuple(f.axes)
-                    else:
-                        gs = plt.GridSpec(2,2)
-                        al,ar = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
-                        ab = f.add_subplot(gs[1,:])
-                        al.imshow(imr, interpolation='none'); ar.imshow(imc, interpolation='none')
-                    ''' '''
-                    al.plot(ref_pos[0], ref_pos[1],'g.'); al.plot(px, py,'r.')
-                    pm = pb+best*dxy
-                    ar.plot(cur_pos[0], cur_pos[1],'g.');ar.plot(pm[0],pm[1],'ro');
-                    ab.plot(err)
-                    ab.vlines(mininum,0,1)
-
-                    if not f0.Z is None:
-                        pt = trueProj(ref_pos[0],ref_pos[1], cGr=inv(rGc), Zr=f0.Z)
-                        ar.plot(pt[0], pt[1],'b.')
-                        ab.vlines((pt[0][win_width]-pb[0])/dxy[0]-sam_min,0,1,'g')
-        else:
-            scode = r'''
+        scode = r'''
             inline float sample(const float* const mat, const int width, const float x, const float y)
             {
                 	int ix = (int)x;
@@ -472,7 +423,110 @@ if __name__ == "__main__":
                 				+ (dx-dxdy) * bp[1]
                 				+ (1-dx-dy+dxdy) * bp[0];
                 	return res;
-            } '''
+            }
+            inline void convolution(const std::vector<float> &ref,
+                                const std::vector<float> &cur,
+                                float *out, int &argmin)
+            {
+                float min_diff = std::numeric_limits<float>::infinity();
+
+                for(size_t i=0; i <= cur.size()-ref.size(); i++ ){
+                    float diff = 0;
+                    for(size_t j=0; j < ref.size();j++ ){
+                        float err = ref[j] - cur[i+j];
+                        diff += err*err;
+                    }
+                    out[i] = diff;
+
+                    if (diff < min_diff){
+                        min_diff = diff;
+                        argmin = i;
+                    }
+                }
+            }
+            '''
+        ima,imb,width = imr, imc, imr.shape[1]
+        if 1 or debug:
+            code = r'''
+                const int win_width = %(win_width)d;
+                const int win_size = 2*win_width+1;
+                std::vector<float> ref_samples(win_size);
+                std::vector<float> cur_samples(1000);
+
+                // std::raise(SIGINT);
+
+                /* 1. Sampling the Intensity */
+                cur_samples.resize(sam_cnt+2*win_width);
+
+                for(int i=0; i<sam_cnt+2*win_width; i++)
+                    cur_samples[i] = sample(&IMB1(0), width,
+                                            PB2(0,p_id)+(sam_min+i-win_width)*DXY2(0,p_id),
+                                            PB2(1,p_id)+(sam_min+i-win_width)*DXY2(1,p_id));
+
+                for(int pos=0; pos<win_size; pos++)
+                    ref_samples[pos] = sample(&IMA1(0),width,
+                                            PX1(p_id)-(pos-win_width)*DXY_LOCAL2(0,p_id),
+                                            PY1(p_id)-(pos-win_width)*DXY_LOCAL2(1,p_id));
+
+                /* 2. go through all the points in cur */
+                convolution(ref_samples, cur_samples, &ERR1(0), BEST1(p_id));
+                BEST1(p_id) += sam_min;
+                '''% {'win_width': win_width }
+
+            for p_id in xrange(node_cnt):
+                sam_min,sam_max = int(vmin[p_id]), int(vmax[p_id])
+                sam_cnt = int(sam_max-sam_min+1)
+                err = np.empty(sam_cnt, 'f')
+
+#                if 0:
+#                    p0 = vec(px[p_id],py[p_id])
+#                    ref_pos = p0 - vec(dxy_local[:,n])*np.arange(-win_width, win_width+1)
+#                    ref_samples = sample(imr, ref_pos[0], ref_pos[1])
+#                    cur_pos = vec(pb[:,n]) + vec(dxy[:,n])*np.arange(sam_min-win_width, sam_max+win_width+1)
+#                    cur_samples = sample(imc, cur_pos[0], cur_pos[1])
+#
+#                    for i in xrange(sam_cnt):
+#                        diff = ref_samples - cur_samples[i:i+2*win_width+1]
+#                        err[i] = (diff*diff).sum()
+#                    mininum = np.nanargmin(err)
+#                    best[n] = sam_min+mininum  #np.argpartition(err, 5)
+#                    cost[n] = err[mininum]
+#                else:
+                weave.inline(code, ['ima','imb','width',
+                                    'p_id','sam_min','sam_max','sam_cnt',
+                                    'pb','dxy','dxy_local','px','py',
+                                    'best','err'],#
+                            support_code=scode, headers=['<algorithm>','<cmath>','<vector>','<map>','<csignal>','<set>'],
+                            compiler='gcc', extra_compile_args=['-std=gnu++11 -msse2 -O3'])
+
+                searchEPL.vlist.append(err)
+                searchEPL.rlist.append((sam_min,sam_max))
+
+                if debug:
+                    ''' obtain or create plotting handle'''
+                    f = plt.figure(num='epl match')
+                    if f.axes:
+                        al,ar,ab = tuple(f.axes)
+                    else:
+                        gs = plt.GridSpec(2,2)
+                        al,ar = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
+                        ab = f.add_subplot(gs[1,:])
+                        al.imshow(imr, interpolation='none'); ar.imshow(imc, interpolation='none')
+                    p0 = vec(px[p_id],py[p_id])
+                    ref_pos = p0 - vec(dxy_local[:,n])*np.arange(-win_width, win_width+1)
+                    cur_pos = vec(pb[:,n]) + vec(dxy[:,n])*np.arange(sam_min-win_width, sam_max+win_width+1)
+
+                    al.plot(ref_pos[0], ref_pos[1],'g.'); al.plot(px, py,'r.')
+                    pm = pb+best*dxy
+                    ar.plot(cur_pos[0], cur_pos[1],'g.');ar.plot(pm[0],pm[1],'ro');
+                    ab.plot(err)
+                    ab.vlines(best[p_id]-sam_min,0,1)
+
+#                    if not f0.Z is None:
+#                        pt = trueProj(ref_pos[0],ref_pos[1], cGr=inv(rGc), Zr=f0.Z)
+#                        ar.plot(pt[0], pt[1],'b.')
+#                        ab.vlines((pt[0][win_width]-pb[0])/dxy[0]-sam_min,0,1,'g')
+        else:
             code = r'''
             size_t M = node_cnt;
             const int win_width = %(win_width)d;
@@ -487,63 +541,46 @@ if __name__ == "__main__":
             for(size_t p_id=0; p_id<M; p_id++){
 
                 /* 1. Sampling the Intensity */
-                int sam_min = std::floor(DMIN1(p_id));
-                int sam_max = std::ceil(DMAX1(p_id));
+                int sam_min = std::floor(VMIN1(p_id));
+                int sam_max = std::ceil(VMAX1(p_id));
                 int sample_size = sam_max-sam_min+1;
-                if(sample_size<1){
+                /*if(sample_size<1){
                     BEST1(p_id) = -1;
                     COST1(p_id) = std::numeric_limits<float>::infinity();
                     continue;   // discard pixel whose epi-line length is 0
 
-                }
+                }*/
                 cur_samples.resize(sample_size+2*win_width);
                 err.resize(sample_size);
                 for(int i=0; i<sample_size+2*win_width; i++)
-                    cur_samples[i] = sample(imb, width,
+                    cur_samples[i] = sample(&IMB1(0), width,
                                             PB2(0,p_id)+(sam_min+i-win_width)*DXY2(0,p_id),
                                             PB2(1,p_id)+(sam_min+i-win_width)*DXY2(1,p_id));
 
                 for(int pos=0; pos<win_size; pos++)
-                    ref_samples[pos] = sample(ima,width,
+                    ref_samples[pos] = sample(&IMA1(0),width,
                                             PX1(p_id)-(pos-win_width)*DXY_LOCAL2(0,p_id),
                                             PY1(p_id)-(pos-win_width)*DXY_LOCAL2(1,p_id));
 
                 /* 2. go through all the points in cur */
-                float min_diff = std::numeric_limits<float>::infinity();
-                for(int i=0; i<sample_size; i++ ){
-                    float diff = 0;
-                    for(int j=0; j<win_size;j++ ){
-                        float err = ref_samples[j] - cur_samples[i+j];
-                        diff += err*err;
-                    }
-
-                    #if 0
-                        if (diff<min_diff){
-                            min_diff = diff;
-                            BEST1(p_id) =i;
-                        }
-                    #else
-                        err[i] = diff;
-                    #endif
-                }
-                COST1(p_id) = min_diff;
+                convolution(ref_samples, cur_samples, &err[0], BEST1(p_id), COST1(p_id));
                 BEST1(p_id) += sam_min;
+
                 /* 3. find the best N element */
-                #if 1
+                #if 0
                     auto result = std::min_element(std::begin(err), std::end(err));
                     BEST1(p_id) = sam_min + std::distance(std::begin(err), result);
                     COST1(p_id) = *result;
                 #endif
-
             }
             '''% {'win_width': win_width }
-            ima,imb,width = imr, imc, imr.shape[1]
-            weave.inline(code, ['ima','imb','width','node_cnt','pb','dmax','dmin','dxy','dxy_local','px','py','best','cost'],#
+
+            weave.inline(code, ['ima','imb','width','node_cnt','pb','vmax','vmin','dxy','dxy_local','px','py','best','cost','vlist'],#
                 support_code=scode, headers=['<algorithm>','<cmath>','<vector>','<map>','<csignal>','<set>'],
                 compiler='gcc', extra_compile_args=['-std=gnu++11 -msse2 -O3'])
-#        best[cost>0.1] = -1
-        res = pb+best*dxy
-        return res, cost, var
+
+        res = ec.DfromV(best)
+        return res, var**2
 
     def test_EPLMatch():
         f = plt.figure(num='epl match'); f.clear()
@@ -554,7 +591,7 @@ if __name__ == "__main__":
         al.imshow(f0.im, interpolation='none'); ar.imshow(f1.im, interpolation='none')
 
         pref = plt.ginput(1, timeout=-1)[0]
-        best0,cost,var = searchEPL(pref[0], pref[1], f0.im, f1.im, getG(f0,f1), iD(10),iD(0.1), win_width=4, debug=True)
+        best0,var = searchEPL(pref[0], pref[1], f0.im, f1.im, getG(f0,f1), iD(10),iD(0.1), win_width=4, debug=True)
 #        ar.plot(f1.px,f1.py,'b.',ms=2)
         plt.pause(0.01)
 
@@ -584,7 +621,7 @@ if __name__ == "__main__":
     refid = 0
 
     fs = []
-    seq = [refid, 9, 1, 2, 3, 4,5,6,7,8]
+    seq = [refid, 9, 1, 2, 3, 4,5,6,7,8]#
     for fid in seq:
         try:
             f = Frame(frames[fid], wGc[fid],Z=Zs[fid])
@@ -597,14 +634,13 @@ if __name__ == "__main__":
         test_calcEpl()
         test_EPLMatch()
 
-
-
-    if 0:
-        ds,vs,es = [],[],[]
+    if 1:
+        ds,vs,data,dr = [],[],[[] for _ in range(len(fs))],[[] for _ in range(len(fs))]
         for i in range(1,len(fs)):
-            d, err, var = f0.searchEPL(fs[i], rmin=iD(5), rmax=iD(0.1), win_width=3) #
+            d,var = f0.searchEPL(fs[i], dmin=iD(5), dmax=iD(2), win_width=3) #
+            data[i].extend(searchEPL.vlist)
+            dr[i].extend(searchEPL.rlist)
             ds.append(d)
-            es.append(err)
             vs.append(var)
 
         def mergeD(d0, var0, d1, var1):
@@ -615,18 +651,25 @@ if __name__ == "__main__":
 
         p0 = 37838
         d,var = ds[0],vs[0]
-        print vec([v[pid] for v in vs ])
+        print vec([v[p0] for v in vs ])     # variance of each match of p0
         for d_,var_ in reversed(zip(ds[1:],vs[1:])):
             d,var = mergeD(d, var, d_, var_)
             print var[p0]
             plotxyzrgb(f0.makePC(1.0/d))
             plt.waitforbuttonpress()
+        [plt.plot(np.linspace(0,1,len(obj[p0])),obj[p0],'o-') for obj in data[1:] ]
 
 
         if not f0.Z is None and 0:
             dt = f0.Z[f0.py,f0.px]
             plotxyzrgb(f0.makePC(dt, 0, 10),hold=True)
-            err = np.abs(dt-d)
+            err = np.abs(dt-1.0/d)
+            emask = (1.0/d)<2
+            pf('emask');
+            pis(f0.im)
+            plt.plot(f0.px,f0.py,'b.',ms=2)
+            plt.plot(f0.px[emask],f0.py[emask],'r.',ms=2)
+            plt.colorbar()
 
         '''filtering'''
         if 0:
@@ -656,25 +699,83 @@ if __name__ == "__main__":
 #            pref = fref.ProjTo(fcur)
 #            sp.plot(pref[0], pref[1], 'r.', ms=2)
         fig.tight_layout()
-#%%
-    if 1:
-        d, err, var = f0.searchEPL(f1, rmin=iD(5), rmax=iD(0.1), win_width=3) #
-        I = f0.getIncidenceMat()
+
+    if 0:
+        d,var = f0.searchEPL(f1, dmin=iD(5), dmax=iD(0.1), win_width=3) #
+        I, nbr_list, nbrs_cnt, enode_out = f0.getIncidenceMat(True)
         L = I.transpose().dot(I)
         D = L.diagonal()
         A = scipy.sparse.diags(D) - L
 
-        Lambda = 1.0
+        plotxyzrgb(f0.makePC(1.0/d,-np.inf,np.inf))
+        '''setup neighbor LUT'''
+        import pandas as pd
+        nbrs = pd.DataFrame(nbr_list, dtype=int).fillna(-1).values
 
-        def solveFixIter(x, y, Lambda=1.0, A=A, D=D, it_num=10):
-            c0 = Lambda/(Lambda+D)
-            c1 = 1/(Lambda+D)
+        node_edge = np.abs(I).T
+
+#%%
+        rec =[]
+
+        def evalE_l1(x,y,Lambda):
+            return np.sqrt(node_edge.dot(I.dot(x)**2)).sum() + Lambda*np.sum((x-y)**2)
+
+        @timing
+        def solveFixIterl1c(x, y, Lambda, I=I, nbrs=nbrs, nbrs_cnt=nbrs_cnt, it_num=20):
+            code = r'''
+                size_t N = Nx[0];
+                // 1. Get the gradient
+                for(size_t pid=0; pid<N; pid++){
+                    float coef_sum = 2.0*Lambda;
+                    float value_sum = 2.0*Lambda*Y1(pid);
+
+                    size_t M = NBRS_CNT1(pid);
+                    for(size_t m=0; m<M; m++){
+                        size_t mid = NBRS2(pid, m);
+                        float Ruv = NGRAD1(pid) + NGRAD1(mid);
+                        coef_sum += Ruv;
+                        value_sum += Ruv * X_1(mid);
+                    }
+                    X1(pid) = value_sum/coef_sum;
+                }'''
+
             for it in range(it_num):
-                x = c0*y + c1*A.dot(x)
+                eFlow = I.dot(x)        # Flow on edges = ▽x
+                nGrad = np.sqrt(node_edge.dot(eFlow**2))     # norm(▽x) of each nodes
+                nGrad = 1.0/(nGrad + 1e-4)
+                x_ = x.copy()
+                weave.inline(code, ['nbrs','nbrs_cnt','nGrad','y','x','x_','Lambda'],
+                             extra_compile_args=['-std=gnu++11 -msse2 -O3'])
+                print evalE_l1(x, y, Lambda)
             return x
 
-        def searchC(f, Lambda, theta, d, cGr=getG(f1, f0)):
-            xr,yr = f.px, f.py
+        @timing
+        def solvePDl1(x0, f, Lambda, it_num=10): #A=A, D=D, I=I ,
+            tau,sigma = 1.0/D, 0.5
+
+            y = np.zeros(I.shape[0])
+            x = x0.copy()
+            x_ = x0.copy()
+
+            for it in range(it_num):
+                y += sigma*I.dot(x_)
+                nGrad = np.maximum(1, np.sqrt(node_edge.dot(y**2)))
+                y /= nGrad[enode_out]   # prox_f
+
+                x_ = x.copy()
+                x -= tau*I.T.dot(y)
+                x = (x + Lambda*tau*f)/(1.0+Lambda*tau)# prox_g
+                x_ = 2*x - x_
+                print evalE_l1(x, f, Lambda)
+            return x
+
+        debug = False
+        p0, = np.where(conditions(f0.px==161,f0.py==281)) #391 220
+        p1 = p0+1
+
+        @timing
+        def searchC(f0, Lambda, theta, d, cGr=getG(f1, f0)):
+            xr,yr = f0.px, f0.py
             Rcr,Tcr = cGr[:3,:3],cGr[:3,3]
 
             H = K.dot(Rcr.dot(inv(K)))
@@ -686,38 +787,57 @@ if __name__ == "__main__":
 
             x = d/(Pinf[2] + d*Pe[2])*dxy_norm
             y = np.empty_like(x)
+            if debug:
+                fig,a = plt.subplots(1,1,num='searchC')
+                cset = [a.plot(f0.v[p0])[0] for i in range(2)]
+                lset = [a.axvline(obj,0,2, c=color) for obj,color in zip([x[0],x[1]],'bg')]
 
-            Cost = f.v
-            for pid in xrange(f.p_cnt):
+            Ed = 0
+            Cost = f0.v
+            for pid in xrange(f0.p_cnt):
                 m = Cost[pid].shape[0]
-                cost = Lambda*Cost[pid] + (vec(range(m))-x[pid])**2/theta
-                y[pid] = np.argmin(cost)
+                rm = np.arange(m)
+                cost = Lambda*Cost[pid] + ((rm-x[pid])/m)**2/theta
+
+                y[pid] = np.nanargmin(cost)
+                Ed += Cost[pid][y[pid]]
+                if debug and pid==p0:
+#                    print x[pid], y[pid]
+                    cset[0].set_data(rm, cost)
+                    cset[1].set_data(rm, Cost[pid])
+                    lset[0].set_xdata(y[pid])
+                    lset[1].set_xdata(np.nanargmin(Cost[pid]))
+                    plt.pause(0.01)
+                    plt.waitforbuttonpress()
 
             a = y/dxy_norm
             dinv = a*Pinf[2]/(1-a*Pe[2])   # λ/(Pinf[2] + λPe1[2])*dxy_norm = v
+            print Lambda*Ed, np.abs(I.dot(x)).sum()
             return dinv
-
-        p0 = 37838
-        p1 = p0+1
-
+#%%
 
         beta = 1e-2
-        theta_init,theta_end = 1e1,1e-3
+        theta_init,theta_end = 1e4,1e-2
         theta = theta_init
         n = 0
         x = d.copy()
         y = x.copy()
+        rec =[]
+
+        Lambda=100.0
+        solver = [solvePDl1, solveFixIterl1c][0]
         while theta > theta_end:
-            x = solveFixIter(x, y, Lambda=1.0/theta)
+            x = solver(x, y, Lambda=1,it_num=10);plotxyzrgb(f0.makePC(1.0/x,-np.inf,np.inf))
             y = searchC(f0, Lambda, theta, x)
 
             theta = theta*(1.0-beta*n)
             n += 1
             print n
 
-            plotxyzrgb(f0.makePC(1.0/x,-np.inf,np.inf))
 
-        plotxyzrgb(f0.makePC(1.0/d,-np.inf,np.inf))
+#            plt.waitforbuttonpress()
+#        plot(rec)
+#        plotxyzrgb(f0.makePC(1.0/d,-np.inf,np.inf))
 
 
 
@@ -740,7 +860,7 @@ if __name__ == "__main__":
 
 #%% distance transform
     @timing
-    def dt(f, q=None, p=None):
+    def dt(f, q=None, p=None, Lambda=1.0):
         f = f.astype('f').copy()
         n = f.shape[0]
 
@@ -757,10 +877,10 @@ if __name__ == "__main__":
             k = 0
             square = lambda x:x*x
             for q_id in range(1,n):
-                s = ( (f[q_id]+square(q[q_id]))-(f[v_id[k]]+square(q[v_id[k]])) )/(2*q[q_id]-2*q[v_id[k]])
+                s = ( (f[q_id]/Lambda+square(q[q_id]))-(f[v_id[k]]/Lambda+square(q[v_id[k]])) )/(2*q[q_id]-2*q[v_id[k]])
                 while (s <= z[k]):
                     k -= 1
-                    s = ( (f[q_id]+square(q[q_id]))-(f[v_id[k]]+square(q[v_id[k]])) )/(2*q[q_id]-2*q[v_id[k]])
+                    s = ( (f[q_id]/Lambda+square(q[q_id]))-(f[v_id[k]]/Lambda+square(q[v_id[k]])) )/(2*q[q_id]-2*q[v_id[k]])
                 k += 1
                 v_id[k] = q_id
                 z[k] = s
@@ -769,7 +889,7 @@ if __name__ == "__main__":
             for p_id in nditer(np.argsort(p)):
                 while z[k+1] < p[p_id]:
                     k += 1
-                d[p_id] = square(p[p_id]-q[v_id[k]]) + f[v_id[k]]
+                d[p_id] = Lambda*square(p[p_id]-q[v_id[k]]) + f[v_id[k]]
                 d_arg[p_id] = v_id[k]
         else:
             scode = r'''
@@ -777,7 +897,7 @@ if __name__ == "__main__":
                     inline T square(const T &x) { return x*x; };
 
                 #define INF std::numeric_limits<float>::infinity()
-                void dt(float *f, float *p, int n,
+                void dt(float *f, float Lambda, float *p, int n,
                         float *q, int m,
                         float *d, int *d_arg)
                 {
@@ -788,10 +908,10 @@ if __name__ == "__main__":
                     z[0] = -INF;
                     z[1] = +INF;
                     for (int q_id = 1; q_id <= n-1; q_id++) {
-                        float s = 0.5*((f[q_id]+square(q[q_id]))-(f[v_id[k]]+square(q[v_id[k]])))/(q[q_id]-q[v_id[k]]);
+                        float s = 0.5*((f[q_id]/Lambda+square(q[q_id]))-(f[v_id[k]]/Lambda+square(q[v_id[k]])))/(q[q_id]-q[v_id[k]]);
                         while (s <= z[k]) {
                             k--;
-                            s = 0.5*((f[q_id]+square(q[q_id]))-(f[v_id[k]]+square(q[v_id[k]])))/(q[q_id]-q[v_id[k]]);
+                            s = 0.5*((f[q_id]/Lambda+square(q[q_id]))-(f[v_id[k]]/Lambda+square(q[v_id[k]])))/(q[q_id]-q[v_id[k]]);
                         }
                         k++;
                         v_id[k] = q_id;
@@ -802,7 +922,7 @@ if __name__ == "__main__":
                     for (int p_id = 0; p_id <= m-1; p_id++) {
                         while (z[k+1] < p[p_id])
                             k++;
-                        d[p_id] = square(p[p_id]-q[v_id[k]]) + f[v_id[k]];
+                        d[p_id] = Lambda*square(p[p_id]-q[v_id[k]]) + f[v_id[k]];
                         d_arg[p_id] = v_id[k];
                     }
 
@@ -811,12 +931,12 @@ if __name__ == "__main__":
                 }'''
             code = r'''
               //std::raise(SIGINT);
-              dt(&F1(0), &P1(0), n,
+              /*dt(&F1(0), Lambda, &P1(0), n,
                  &Q1(0), m,
-                 &D1(0), &D_ARG1(0));
-             dt(f,p,n,q,m,d,d_arg);
+                 &D1(0), &D_ARG1(0));*/
+             dt(f,Lambda,p,n,q,m,d,d_arg);
             '''
-            weave.inline(code,['d','d_arg','f','n','m','p','q'],
+            weave.inline(code,['d','d_arg','f','n','m','p','q','Lambda'],
                          support_code=scode, headers=['<algorithm>','<cmath>','<vector>','<stdio.h>','<csignal>'],
                          compiler='gcc', extra_compile_args=['-std=gnu++11 -msse2 -O3'])
         return d,d_arg
@@ -871,90 +991,3 @@ if __name__ == "__main__":
             z = prox_fl2(L.dot(x) + u)
             u = u+L.dot(x)-z
 
-
-
-
-#%%
-    def searchEPLMulti(px, py, imr, imc, rGc, N=5, win_width=4, debug=False):
-        # px, py, imr, imc, rGc, N, win_width, debug = pref[0], pref[1], f0.im, f1.im, getG(f0,f1), 5, 4, True
-        # px, py, imr, imc, rGc, N, win_width, debug = f0.px, f0.py, f0.im, f1.im, getG(f0,f1), 5, 4, False
-        px,py = np.atleast_1d(px, py)
-
-        node_cnt = len(px)
-        pb,dxy,dmax,dmin,dxy_local = calcEpl(px, py, rGc)
-        best = np.full((node_cnt, N),-1, 'i')
-        cost = np.empty_like(best, 'f')
-        best_cnt = np.zeros(node_cnt,'i')
-
-        for n in xrange(node_cnt):
-            print n
-            p0 = vec(px[n],py[n])
-
-            ref_pos = p0 - vec(dxy_local[:,n])*np.arange(-win_width, win_width+1) # TODO: correct the sign
-            ref_samples = sample(imr, ref_pos[0], ref_pos[1])
-
-            sam_cnt = np.floor(dmax[n])
-            if sam_cnt<1:
-                best[n] = -1
-                continue
-
-            cur_pos = vec(pb[:,n]) + vec(dxy[:,n])*np.arange(-win_width, sam_cnt+win_width)
-            cur_samples = sample(imc, cur_pos[0], cur_pos[1])
-            err = np.empty(sam_cnt,'f')
-
-            for i in xrange(int(sam_cnt)):
-                diff = ref_samples - cur_samples[i:i+2*win_width+1]
-                err[i] = (diff*diff).sum()
-            extrema_id, = scipy.signal.argrelmin(err)
-            extrema_id = extrema_id[np.argsort(err[extrema_id])]
-            can_cnt = np.minimum(len(extrema_id), N)
-            best_cnt[n] = can_cnt
-            best[n,:can_cnt] = extrema_id[:can_cnt]
-            cost[n,:can_cnt] = err[best[n,:can_cnt]]
-
-        if debug:
-            f = plt.figure(num='epl match multi')
-            if f.axes:
-                al,ar,ab = tuple(f.axes)
-            else:
-                gs = plt.GridSpec(2,2)
-                al,ar = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
-                ab = f.add_subplot(gs[1,:])
-                al.imshow(imr, interpolation='none'); ar.imshow(imc, interpolation='none')
-#                        pt = trueProj(ref_pos[0],ref_pos[1], cGr=inv(rGc), Zr=f0.Z)
-#                        ar.plot(pt[0], pt[1],'b.')
-            al.plot(ref_pos[0], ref_pos[1],'g.'); al.plot(px, py,'r.')
-            result = best[best!=-1]
-            pm = pb+result*dxy
-            ar.plot(cur_pos[0], cur_pos[1],'g.');ar.plot(pm[0],pm[1],'r*')
-            ab.plot(err)
-            ab.vlines(result,0,1)
-        return best,cost,best_cnt
-
-    def test_EPLMatchMulti():
-        f = plt.figure(num='epl match multi'); f.clear()
-        gs = plt.GridSpec(2,2)
-        al,ar = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
-        ab = f.add_subplot(gs[1,:])
-        plt.tight_layout()
-        al.imshow(f0.im, interpolation='none'); ar.imshow(f1.im, interpolation='none')
-        ar.plot(f1.px,f1.py,'b.',ms=2)
-
-        pref = plt.ginput(1, timeout=-1)[0]
-        best,cost,c_cnt = searchEPLMulti(pref[0], pref[1], f0.im, f1.im, getG(f0,f1), 5, win_width=4, debug=True)
-
-        plt.pause(0.01)
-
-
-    if 0:
-        best,cost,best_cnt = searchEPLMulti(f0.px, f0.py, f0.im, f1.im, getG(f0,f1))
-        for it in range(1,7):
-            if np.mod(it,2):
-                p_seq = xrange(f0.p_cnt)
-                nbrs = f0.nbrs[0]
-            else:
-                p_seq = reversed(xrange(f0.p_cnt))
-                nbrs = f0.nbrs[1]
-            for p_id in p_seq:
-                for nbr_id in nbrs[i]:
-                    pass

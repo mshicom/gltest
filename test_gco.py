@@ -69,7 +69,6 @@ if __name__ == "__main__":
 
 #%% edge-only stereo
     from scipy import sparse
-    vec = lambda x:np.reshape(x,(-1,1))
     py, px = pvm[0].nonzero()
     node_cnt = px.size
     '''1. setup neighbors'''
@@ -324,32 +323,39 @@ if __name__ == "__main__":
     ret = solvers.solve([fdata, fsmooth], x0, solver, maxit=100)
 
 #%%
+    N = 30.0
+
+    coffset = vec(2.0, -3.0, 4.0) #, 3.0
+    C = (np.sin(6*np.pi*np.arange(N, dtype='f')/N + coffset)+1)*10
+    cdt = [ dt(C[i],Lambda=2)[0] for i in range(3) ]
+
 
     I = np.array([[-1,1,0],[0,-1,1]],'f')
 #    I = np.array([[-1,1,0,0],[0,-1,1,0],[1,0,-1,0],[0,1,0,-1]],'f'),[1,0,-1]
     L = I.T.dot(I)
     D = L.diagonal()
     A = np.diag(D)-L
+    node_edge = np.abs(I).T
+    '''setup neighbor LUT'''
+    import pandas as pd
+    nbrs_list = [np.where(A[v])[0] for v in range(I.shape[1])]
+    nbrs = pd.DataFrame(nbrs_list, dtype=int).fillna(-1).values
+    nbrs_cnt = D.astype('i')  # np.array([len(nbl) for nbl in nbrs_list],'i')
 
-    N = 30.0
 
-    coffset = vec(2.0, -3.0, 4.0) #, 3.0
-    C = (np.sin(2*np.pi*np.arange(N, dtype='f')/N + coffset)+1)*10
 
     def make_func(offset):
-        return lambda x: (np.sin(2*np.pi*x/N + offset)+1)*10
+        return lambda x: (np.sin(6*np.pi*x/N + offset)+1)*10
     def make_func_reg(old, Lambda, theta, offset):
         return lambda x: Lambda*old(x)+(x-offset)**2/theta
     def find_root(func,x0):
         return scipy.optimize.minimize(func, x0, args=(), method='CG').x
     Cf = [make_func(offset) for offset in coffset]
 
-    Lambda = 1.0
-    use_l1 = True #False#
 
 
 
-    def solveLinear(y, Lambda=Lambda, L=L):
+    def solveLinearl2(x0, y, Lambda): #, L=L
         '''solve matrix equation: (λI+A)*x = y, for argmin[x'Ax +λ(x-y)**2]'''
         if scipy.sparse.isspmatrix(L):
             A = Lambda*scipy.sparse.identity(len(y)) + L
@@ -359,7 +365,7 @@ if __name__ == "__main__":
             x = np.linalg.solve(A, y)
         return x
 
-    def solveFixIterl2(x, y, Lambda=Lambda, A=A, D=D, it_num=10):
+    def solveFixIterl2(x, y, Lambda, it_num=10): # A=A, D=D,
         if 1:
             c0 = Lambda/(Lambda+D)
             c1 = 1/(Lambda+D)
@@ -377,29 +383,18 @@ if __name__ == "__main__":
                     x[v] = Lambda/(Lambda+D[v])*y[v] + 1/(Lambda+D[v])*np.sum(c)
             return x
 
-#    def solveFixIterl1(x, y, Lambda=Lambda, A=A, D=D, I=I ,it_num=10):
-#        edge_node = np.abs(I)                # edges x nodes
-#        node_edge = edge_node.T
-#        ''' 1. A[n]*x = (A*x)[n] = [0,.., x, ..,0] vector indicating neighbours, 1xN
-#               of node n, which will be nonezero  (i.e. N=len(x))
-#            2. node_edge[m]*x = (node_edge*x)[m] = [0,.., x, ..,0] vector indicating nodes on egde m,
-#            3. node_edge.dot(e..)[n] = scalar = sum(edges related with node n )
-#               edge_node.dot(n..)[m] = scalar = sum(nodes related with edge m ) '''
-#        enode_out = np.where(edge_node)[1]
-#        for it in range(it_num):
-#            eFlow = I.dot(x)        # Flow on edges = ▽x
-#            nGrad = np.sqrt(node_edge.dot(eFlow**2))    # norm(▽x) of each nodes
-#            eRuv = edge_node.dot(1.0/(nGrad + 1e-4))
-#            x = 2*Lambda*y + node_edge.dot(eRuv*x[enode_out])
-#            x /= 2*Lambda + node_edge.dot(eRuv)
-#            print x
-#        return x.ravel()
-
-    def solveFixIterl1(x, y, Lambda=Lambda, A=A, D=D, I=I ,it_num=10):
+    def solveFixIterl1(x, y, Lambda, it_num=10): # A=A, D=D, I=I ,
         edge_node = np.abs(I)                # edges x nodes
         node_edge = edge_node.T
+        ''' 1. A[n]*x = (A*x)[n] = [0,.., x, ..,0] vector indicating neighbours, 1xN
+               of node n, which will be nonezero  (i.e. N=len(x))
+            2. node_edge[m]*x = (node_edge*x)[m] = [0,.., x, ..,0] vector indicating nodes on egde m,
+            3. node_edge.dot(e..)[n] = scalar = sum(edges related with node n )
+               edge_node.dot(n..)[m] = scalar = sum(nodes related with edge m ) '''
 
+        '''setup neighbor LUT'''
         nbrs = [np.where(A[v])[0] for v in range(len(x))]
+
         for it in range(it_num):
             eFlow = I.dot(x)        # Flow on edges = ▽x
             nGrad = np.sqrt(node_edge.dot(eFlow**2))     # norm(▽x) of each nodes
@@ -410,50 +405,104 @@ if __name__ == "__main__":
                 x[pid] = 2*Lambda*y[pid] + np.sum(eRuv*x_[nbrs[pid]])
                 x[pid] /= 2*Lambda + np.sum(eRuv)
             print x
-        return x.ravel()
+        return x
+
+
+    def solveFixIterl1c(x, y, Lambda, it_num=10): # I=I, nbrs=nbrs, nbrs_cnt=nbrs_cnt,
+        node_edge = np.abs(I).T # nodesx edges
+
+        code = r'''
+            size_t N = Nx[0];
+            // 1. Get the gradient
+            for(size_t pid=0; pid<N; pid++){
+                float coef_sum = 2.0*Lambda;
+                float value_sum = 2.0*Lambda*Y1(pid);
+
+                size_t M = NBRS_CNT1(pid);
+                for(size_t m=0; m<M; m++){
+                    size_t mid = NBRS2(pid, m);
+                    float Ruv = NGRAD1(pid) + NGRAD1(mid);
+                    coef_sum += Ruv;
+                    value_sum += Ruv * X_1(mid);
+                }
+                X1(pid) = value_sum/coef_sum;
+            }'''
+        for it in range(it_num):
+            eFlow = I.dot(x)        # Flow on edges = ▽x
+            nGrad = np.sqrt(node_edge.dot(eFlow**2))     # norm(▽x) of each nodes
+            nGrad = 1.0/(nGrad + 1e-4)
+            x_ = x.copy()
+            weave.inline(code, ['nbrs','nbrs_cnt','nGrad','y','x','x_','Lambda'],
+                         extra_compile_args=['-std=gnu++11 -msse2 -O3'])
+            print x
+        return x
+
+    def solvePDl1(x0, f, Lambda, it_num=10): #A=A, D=D, I=I ,
+        node_edge = np.abs(I).T
+        enode_out = np.where(I<0)[1]
+
+        tau,sigma = 1.0/D, 0.5
+
+        y = np.zeros(I.shape[0])
+        x = x0.copy()
+        x_ = x0.copy()
+
+        for it in range(it_num):
+            y += sigma*I.dot(x_)
+            nGrad = np.maximum(1, np.sqrt(node_edge.dot(y**2)))
+            y /= nGrad[enode_out]   # prox_f
+
+            x_ = x.copy()
+            x -= tau*I.T.dot(y)
+            x = (x + Lambda*tau*f)/(1.0+Lambda*tau)# prox_g
+            x_ = 2*x - x_
+#            print x, np.sqrt(node_edge.dot(I.dot(x)**2)).sum() + Lambda*np.sum((x-f)**2)
+        return x
+
+    def evalE_l1(x,y,Lambda):
+        return np.sqrt(node_edge.dot(I.dot(x)**2)).sum() + Lambda*np.sum((x-y)**2)
+
+    def evalE_l2(x,y,Lambda):
+        return  ((I.dot(x))**2).sum() + Lambda*np.sum((x-y)**2)
+
+    def findOpt(shape, func, *arg):
+        n,m = shape  # nodes,datas = n,m
+        e = np.empty((m,)*n,'f')
+        from itertools import product
+        for inds in product(range(m),repeat=n):
+            e[inds] = func(inds, *arg)
+        x_opt = np.unravel_index(np.argmin(e), e.shape)
+        findOpt.e = e
+        print Lambda, x_opt, e[x_opt]
+        return x_opt
 
     def test_solveFixIter():
-        if use_l1:
-            def evalEp(x,y):
-                return np.abs(I.dot(x)).sum() + Lambda*np.sum((x-y)**2)
-        else:
-            def evalEp(x,y):
-                return  ((I.dot(x))**2).sum() + Lambda*np.sum((x-y)**2)
+        evalEs = [evalE_l1, evalE_l2][0]
 
-        def findOpt(Lambda,y):
-            n = y.shape[0]  # nodes,datas = n,m
-            m = 30
-            e = np.empty((m,)*n,'f')
-            from itertools import product
-            for inds in product(range(m),repeat=n):
-                x = np.asarray(inds)
-                e[inds] = evalEp(x,y)
-            x_opt = np.unravel_index(np.argmin(e), e.shape)
-            return np.array(x_opt)
+        tLambda = 1
         y = np.array([0,7,6],'f')
-        x0 = y.copy()
-        x_t = findOpt(Lambda, y)
-        x_e = solveFixIterl1(x0, y, Lambda) if use_l1 else solveFixIterl2(x0, y, Lambda)
-        print 'Lambda & y:',Lambda, y
-        print 'reference:', x_t, evalEp(x_t, y)
-        print 'estimated:', x_e, evalEp(x_e, y)
+        x0 = np.zeros(3,'f') #y.copy()
 
-    if use_l1:
-        def evalE(*x):
-            x = np.asarray(x).ravel()
-            if 0:
-                return np.abs(L.dot(x)).sum()+Lambda*(np.sum(C[range(len(x)),np.round(x).astype('i')]))
-            else:
-                return np.abs(L.dot(x)).sum()+Lambda*(np.sum([obj(v) for obj,v in zip(Cf,vec(x)) ]))
-    else:
-        def evalE(*x):
-            x = np.asarray(x).ravel()
-            if 0:
-                return x.T.dot(L.dot(x))+Lambda*(np.sum(C[range(len(x)),np.round(x).astype('i')]))
-            else:
-                return x.T.dot(L.dot(x))+Lambda*(np.sum([obj(v) for obj,v in zip(Cf,vec(x)) ]))
+        x_t = findOpt((len(y),30), evalEs, y, tLambda)
+        x_e = [solvePDl1, solveFixIterl1c, solveFixIterl1,solveFixIterl2][2](x0, y, tLambda)
+        print 'Lambda & y:',tLambda, y
+        print 'reference:', x_t, evalEs(x_t, y, tLambda)
+        print 'estimated:', x_e, evalEs(x_e, y, tLambda)
 
-    y = np.argmin(C,axis=-1).astype('f')
+    def evalE_l1c(x, Lambda):
+        return np.sqrt(node_edge.dot(I.dot(x)**2)).sum()+Lambda*(np.sum(C[range(len(x)),np.round(x).astype('i')]))
+
+    def evalE_l1f(x, Lambda):
+        return np.sqrt(node_edge.dot(I.dot(x)**2)).sum()+Lambda*(np.sum([obj(v) for obj,v in zip(Cf,vec(x)) ]))
+
+    def evalE_l2c(x, Lambda):
+        return x.T.dot(L.dot(x))+Lambda*(np.sum(C[range(len(x)),np.round(x).astype('i')]))
+
+    def evalE_l2f(x, Lambda):
+        return x.T.dot(L.dot(x))+Lambda*(np.sum([obj(v) for obj,v in zip(Cf,vec(x)) ]))
+    evalE = [evalE_l1c,evalE_l1f,evalE_l2c,evalE_l2f][1]
+
+    y = np.array([4,12,1],'f')
     x = y.copy()
 
     f,a = plt.subplots(1,1,num='cost-volume denoise');a.clear()
@@ -463,19 +512,20 @@ if __name__ == "__main__":
     lset1 = [a.axvline(obj,0,2, c=color) for obj,color in zip(vec(x),'bgrc')]
     lset2 = [a.axvline(obj,0,2, c=color, ls='--') for obj,color in zip(vec(y),'bgrc')]
 
-
-    beta = 1e-2
-    theta_init,theta_end = 1e2,5e-2
+    beta = 1e-3
+    theta_init,theta_end = 1e4,1e-3
     theta = theta_init
     n = 0
 
-    solver = solveFixIterl1 if use_l1 else solveFixIterl2
+    Lambda = 1.0
+
+    solver = [solveFixIterl1c, solvePDl1, solveFixIterl2][1]
     while theta > theta_end:
 
-        x = solver(x, y, 1/theta) # x = solveLinear(y, 1/theta)
-
-        Cnew = Lambda*C+(np.arange(N)-vec(x))**2/theta
-        if 1:
+        x = solver(x, y, 1/theta)
+        pen = (np.arange(N)-vec(x))**2/theta
+        Cnew = Lambda*C+pen
+        if 0:
             y = np.argmin(Cnew, axis=-1)
         else:
             Cfnew = [make_func_reg(old, Lambda, theta, offset) for old,offset in zip(Cf,vec(x))]
@@ -485,26 +535,18 @@ if __name__ == "__main__":
 
         [obj.set_xdata(bar) for obj,bar in zip(lset2,vec(y))]
         [obj.set_xdata(bar) for obj,bar in zip(lset1,vec(x))]
-        [obj.set_ydata(bar) for obj,bar in zip(curset1,Cnew)]
+        [obj.set_ydata(bar) for obj,bar in zip(curset1,pen)]
         plt.pause(0.1)
-#        plt.waitforbuttonpress()
+        plt.waitforbuttonpress()
 
         theta = theta*(1.0-beta*n)
         n += 1
-        print x, evalE(x)
+        print x, evalE(x, Lambda)
 
-    def test_optimization():
-        def findOpt(Lambda,C):
-            n,m = C.shape  # nodes,datas = n,m
-            e = np.empty((m,)*n,'f')
-            from itertools import product
-            for inds in product(range(m),repeat=n):
-                e[inds] =  evalE(inds)
-            x_opt = np.unravel_index(np.argmin(e), e.shape)
-            print Lambda, x_opt, e[x_opt]
-            return x_opt
-        x_opt=findOpt(Lambda,C)
-        [obj.set_xdata(bar) for obj,bar in zip(lset2,vec(x_opt))]
-#    test_optimization()
+    x_opt = findOpt(C.shape, evalE, Lambda)
+    print 'reference:', x_opt, evalE(x_opt, Lambda)
+    [obj.set_xdata(bar) for obj,bar in zip(lset2,vec(x_opt))]
+
+
 
 
