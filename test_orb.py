@@ -149,7 +149,7 @@ if __name__ == "__main__":
             u, v = np.meshgrid(range(w),range(h))
             border_width = 20
             mask = reduce(np.logical_and, [w-border_width>u, u>=border_width,
-                                           h-border_width>v, v>=border_width]) #, grad>gthreshold exclude border pixels
+                                           h-border_width>v, v>=border_width, grad>gthreshold]) # exclude border pixels
 #            mask = conditions(189>u, u>107, 293>v, v>225) #, grad>gthreshold exclude border pixels
 
             y,x = np.where(mask)
@@ -280,8 +280,15 @@ if __name__ == "__main__":
             else:
                 return incidence_matrix
 
-        def getId(self, x,y):
-            return np.where(conditions(self.px==x,self.py==y))[0]
+        def getId(self, x=None,y=None):
+            global p0
+            if x is None:
+                plt.figure(num='pick a point');
+                plt.imshow(self.im)
+                plt.plot(self.px,self.py,'b.')
+                (x,y), = np.round(plt.ginput(1, timeout=0))
+            p0 = int(np.where(conditions(self.px==x,self.py==y))[0])
+            return p0
 
     def getG(f0,f1):
         '''return 1G0, which p1 = 1G0 * p0  '''
@@ -383,7 +390,6 @@ if __name__ == "__main__":
         pmin = ec.XYfromV(0)
         pmax = ec.XYfromD(ec.getDlimt())
         a.plot([pmin[0]+640,pmax[0]+640], [pmin[1],pmax[1]],'g-')
-
         plt.pause(0.01)
 
         ec2 = EpilineCalculator(f0.px, f0.py, getG(f0,f1), K) #
@@ -403,7 +409,7 @@ if __name__ == "__main__":
         vmax = np.floor(ec.VfromD(dmax)).astype('i4')           # Nx1
         vmin = np.ceil( ec.VfromD(dmin)).astype('i4')           # Nx1
         pb,dxy,dxy_local = ec.nPinf, ec.dxy, ec.dxy_local
-        var = (dmin-dmax)/(vmax-vmin)
+        var = (dmax-dmin)/(vmax-vmin)
 
         node_cnt = len(px)
         best = np.empty(node_cnt,'i')
@@ -615,13 +621,11 @@ if __name__ == "__main__":
 
 
 
-
-#%% main
     ''' set up matching Frame'''
     refid = 0
 
     fs = []
-    seq = [refid, 9, 1, 2, 3, 4,5,6,7,8]#
+    seq = [refid, 9, 1, 2 ]#,3, 4,5,6,7,8
     for fid in seq:
         try:
             f = Frame(frames[fid], wGc[fid],Z=Zs[fid])
@@ -629,25 +633,63 @@ if __name__ == "__main__":
             f = Frame(frames[fid], wGc[fid])
         fs.append(f)
     f0,f1 = fs[0],fs[1]
+    f0.extractPts()
+#%% main
 
     if 0:
         test_calcEpl()
         test_EPLMatch()
 
     if 1:
-        ds,vs,data,dr = [],[],[[] for _ in range(len(fs))],[[] for _ in range(len(fs))]
+        ds,vs,ecs,data,dr = [],[],[],[[] for _ in range(len(fs)-1)],[[] for _ in range(len(fs)-1)]
         for i in range(1,len(fs)):
-            d,var = f0.searchEPL(fs[i], dmin=iD(5), dmax=iD(2), win_width=3) #
-            data[i].extend(searchEPL.vlist)
-            dr[i].extend(searchEPL.rlist)
+            d,var = f0.searchEPL(fs[i], dmin=iD(5), dmax=iD(1), win_width=3) #
+            data[i-1].extend(searchEPL.vlist)
+            dr[i-1].extend(searchEPL.rlist)
+            ecs.append(searchEPL.ec)
             ds.append(d)
             vs.append(var)
+
+        def test_mergeCurve():
+            def plotline(p0):
+                pf()
+                for frame in range(len(fs)-1):
+                    vmin,vmax = dr[frame][p0]
+                    dlist = ecs[frame].DfromV(vec(np.arange(vmin,vmax+1)), p0).ravel()
+                    plt.plot(dlist, data[frame][p0],'*-')
+            @timing
+            def mergeCurve(minmax1,y1,minmax2,y2):
+                len1,len2 = len(y1),len(y2)
+                if len1<len2:
+                    len1,minmax1,y1,len2,minmax2,y2 = len2,minmax2,y2,len1,minmax1,y1
+
+                dom1 = np.linspace(minmax1[0],minmax1[1],len(y1))
+                dom2 = np.linspace(minmax2[0],minmax2[1],len(y2))
+                y2_ = np.interp(dom1, dom2, y2)
+                return minmax1, 0.5*(y1+y2_)
+
+            def getData(frame):
+                minmax = dr[frame][p0]
+                minmax = ecs[frame].DfromV(vec(minmax), p0).ravel()
+                y = data[frame][p0]
+                return minmax,y
+
+            plotline(f0.getId())
+            minmax,y = getData(0)
+            for frame in range(len(dr)):
+                minmax_,y_ = getData(frame)
+                minmax, y = mergeCurve(minmax,y,minmax_,y_)
+            plt.plot(np.linspace(minmax[0],minmax[1],len(y)), y, '*-',linewidth=4)
+
+
 
         def mergeD(d0, var0, d1, var1):
             var_sum = var0+var1
             d = var1/var_sum*d0 + var0/var_sum*d1
             var = var1*var0/var_sum
             return d,var
+
+
 
         p0 = 37838
         d,var = ds[0],vs[0]
@@ -775,15 +817,6 @@ if __name__ == "__main__":
 
         @timing
         def searchC(f0, Lambda, theta, d, cGr=getG(f1, f0)):
-            xr,yr = f0.px, f0.py
-            Rcr,Tcr = cGr[:3,:3],cGr[:3,3]
-
-            H = K.dot(Rcr.dot(inv(K)))
-            Pinf = H.dot(projective(xr, yr))  # Pinf=K.dot(Rcr.dot(backproject(xr, yr))
-            Pe = vec(K.dot(Tcr))
-
-            dxy_raw = -Pe[2]/Pinf[2]*Pinf[:2]+Pe[:2]   # 2xN
-            dxy_norm = np.linalg.norm(dxy_raw, axis=0)   # N
 
             x = d/(Pinf[2] + d*Pe[2])*dxy_norm
             y = np.empty_like(x)
