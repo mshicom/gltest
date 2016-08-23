@@ -20,7 +20,7 @@ from scipy import weave,sparse
 from tools import *
 from EpilineCalculator import EpilineCalculator,EpilineDrawer
 
-
+from orb_kfs import loaddata4
 
 import scipy.signal
 def scharr(im):
@@ -259,7 +259,7 @@ def searchEPL(px, py, imr, imc, rGc, K, dmin=0, dmax=np.inf, win_width=4, debug=
         }
         '''
     ima,imb,width = imr, imc, imr.shape[1]
-    if 1 or debug:
+    if 0 or debug:
         code = r'''
             const int win_width = %(win_width)d;
             const int win_size = 2*win_width+1;
@@ -395,13 +395,14 @@ def searchEPL(px, py, imr, imc, rGc, K, dmin=0, dmax=np.inf, win_width=4, debug=
             support_code=scode, headers=['<algorithm>','<cmath>','<vector>','<map>','<csignal>','<set>'],
             compiler='gcc', extra_compile_args=['-std=gnu++11 -msse2 -O3'])
 
-    res = ec.DfromV(best[valid_mask],np.where(valid_mask)).ravel()
-    return res, valid_mask, var[valid_mask]**2
+    res = ec.DfromV(best).ravel()
+    return res, valid_mask, var**2
 
 if __name__ == "__main__":
 #    frames, wGc, K, Zs = loaddata1()
-    frames, wGc, K = loaddata2()
-    EpilineDrawer(frames[0:], wGc[0:], K)
+#    frames, wGc, K = loaddata2()
+    frames, wGc, K = loaddata4(20)
+#    EpilineDrawer(frames[0:], wGc[0:], K)
     h,w = frames[0].shape[:2]
     fx,fy,cx,cy = K[0,0],K[1,1],K[0,2],K[1,2]
 
@@ -456,11 +457,11 @@ if __name__ == "__main__":
 
 
     ''' set up matching Frame'''
-    refid = 2
+    refid = 0
 
     fs = []
-    seq = [refid,  3, 4, 9]#,3, 4,5,6,7,8s
-    for fid in seq:
+    seq = [refid,  1, 2, 3]#,3, 4,5,6,7,8s
+    for fid in range(len(frames)):
         try:
             f = Frame(frames[fid], wGc[fid], Z=Zs[fid])
         except:
@@ -474,15 +475,16 @@ if __name__ == "__main__":
         test_EPLMatch()
         test_EpilineCalculator()
 
-    if 1:
-        ds,vs,ecs,data,dr = [],[],[],[[] for _ in range(len(fs)-1)],[[] for _ in range(len(fs)-1)]
+    if 0:
+        ds,vs,ecs,vms,data,dr = [],[],[],[],[[] for _ in range(len(fs)-1)],[[] for _ in range(len(fs)-1)]
         for i in range(1,len(fs)):
-            d,vm,var = f0.searchEPL(fs[i], K, dmin=iD(5), dmax=iD(1), win_width=3) #
+            d,vm,var = f0.searchEPL(fs[i], K, dmin=iD(5), dmax=iD(0.1), win_width=3) #
             data[i-1].extend(searchEPL.vlist)
             dr[i-1].extend(searchEPL.rlist)
             ecs.append(searchEPL.ec)
             ds.append(d)
             vs.append(var)
+            vms.append(vm)
 
         def test_mergeCurve():
             def plotline(p0):
@@ -524,12 +526,13 @@ if __name__ == "__main__":
             return d,var
 
 #        p0 = 37838
-        d,var = ds[0],vs[0]
-        print vec([v[p0] for v in vs ])     # variance of each match of p0
-        for d_,var_ in reversed(zip(ds[1:],vs[1:])):
+        d,var,vm = ds[0],vs[0],vms[0]
+#        print vec([v[p0] for v in vs ])     # variance of each match of p0
+        for d_,var_,vm_ in reversed(zip(ds[1:],vs[1:],vms[1:])):
             d,var = mergeD(d, var, d_, var_)
+            vm = conditions(vm,vm_)
 #            print var[p0]
-            plotxyzrgb(f0.makePC(1.0/d))
+            plotxyzrgb(f0.makePC(1.0/d, vm))
             plt.waitforbuttonpress()
         [plt.plot(np.linspace(0,1,len(obj[p0])),obj[p0],'o-') for obj in data[1:] ]
 
@@ -574,8 +577,8 @@ if __name__ == "__main__":
 #            sp.plot(pref[0], pref[1], 'r.', ms=2)
         fig.tight_layout()
 
-    if 0:
-        d,vm,var = f0.searchEPL(f1, K, dmin=iD(5), dmax=iD(0.1), win_width=3) #
+    if 1:
+        d,vm,var = f0.searchEPL(fs[3], K, dmin=iD(5), dmax=iD(0.1), win_width=4) #
         I, nbr_list, nbrs_cnt, enode_out = f0.getIncidenceMat(True)
         L = I.transpose().dot(I)
         D = L.diagonal()
