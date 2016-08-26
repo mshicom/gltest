@@ -31,6 +31,21 @@ def readOpencvYAMLFile(fileName):
         ret = yaml.load(yamlFileOut)
     return ret
 
+def opencv_matrix_representer(dumper, mat):
+    mapping = {'rows': mat.shape[0], 'cols': mat.shape[1], 'dt': 'd', 'data': mat.reshape(-1).tolist()}
+    return dumper.represent_mapping(u"tag:yaml.org,2002:opencv-matrix", mapping)
+yaml.add_representer(np.ndarray, opencv_matrix_representer)
+
+def wirteOpencvYAMLFile(fileName, array_dict):
+    # array_dict = {"a matrix": np.zeros((10,10)), "another_one": np.zeros((2,4))}
+    with open(fileName, 'w') as f:
+        f.write("%YAML:1.0")
+        yaml.dump(array_dict, f)
+
+
+
+
+
 
 def loadImageFromBag():
     import rosbag

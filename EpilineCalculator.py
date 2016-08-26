@@ -183,7 +183,7 @@ class EpilineCalculator(object):
         self.getLimits = getLimits
 
 class EpilineDrawer(object):
-    def __init__(self, frames, wGc, K):
+    def __init__(self, frames, wGc, K, p0=None):
 
         self.ind = 0
         self.ecs = {}
@@ -193,13 +193,18 @@ class EpilineDrawer(object):
         a1 = plt.subplot(121)
         a1.imshow(frames[0], interpolation='none', aspect=1)
         a1.autoscale(False)
+        a1.set_title('pick a point in this image')
 
         a2 = plt.subplot(122)
         i2 = a2.imshow(frames[1], interpolation='none', aspect=1)
         a2.autoscale(False)
 
-        xr, yr = np.round(plt.ginput(1, timeout=-1)[0])
+        if p0 is None:
+            xr, yr = np.round(plt.ginput(1, timeout=-1)[0])
+        else:
+            xr, yr = p0
         a1.plot(xr, yr,'r.')
+        a1.set_title(' ')
 
         line1, = a2.plot([],'r-')
         dots, = a2.plot([],'b.',ms=5)
