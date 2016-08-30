@@ -39,7 +39,7 @@ yaml.add_representer(np.ndarray, opencv_matrix_representer)
 def wirteOpencvYAMLFile(fileName, array_dict):
     # array_dict = {"a matrix": np.zeros((10,10)), "another_one": np.zeros((2,4))}
     with open(fileName, 'w') as f:
-        f.write("%YAML:1.0")
+        f.write("%YAML:1.0\n")
         yaml.dump(array_dict, f)
 
 

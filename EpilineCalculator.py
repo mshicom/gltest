@@ -7,8 +7,12 @@ Created on Mon Aug 22 11:50:58 2016
 """
 import numpy as np
 import matplotlib.pyplot as plt
+import scipy
 
 from tools import loaddata1
+def sample(dIc,x,y):
+    x,y = np.atleast_1d(x, y)
+    return scipy.ndimage.map_coordinates(dIc, (y,x), order=1, cval=np.nan)
 
 def normalize(P):
     '''normalize N points seperately, dim(P)=3xN'''
@@ -115,6 +119,9 @@ class EpilineCalculator(object):
         self.dxy = dxy
         self.dxy_local = dxy_local
         self.nPinf = nPinf
+        self.Pb = inv(K).dot(Pr)
+        self.Pe = Pe
+        self.Pinf = Pinf
 
         self.VfromD = lambda  d,ind=slice(None): np.where(d==np.inf, dxy_norm[ind]/Pe[2], d/(Pinf[2,ind] + d*Pe[2])*dxy_norm[ind])
         self.VfromX = lambda xc,ind=slice(None): (xc - nPinf[0,ind])/dxy[0,ind]
@@ -177,10 +184,42 @@ class EpilineCalculator(object):
                 vmax = np.minimum(vmax, dxy_norm/Pe[2])
             d_min, d_max = self.DfromV(vmin), self.DfromV(vmax)
             # e
-            valid_mask = conditions(valid_mask, (vmax-vmin)>4)
+            valid_mask = conditions(valid_mask, (vmax-vmin)>1)
 
             return vmin,vmax, d_min, d_max, valid_mask
         self.getLimits = getLimits
+
+        def searchEPL(imr, imc, win_width=3, index=None, dmin=0.0, dmax=1e6):
+            if index is None:
+                index = range(len(xr))
+            index = np.atleast_1d(index)
+
+            offset = np.arange(-win_width, win_width+1)
+            vmin,vmax, d_min, d_max, valid_mask = getLimits(imr.shape, dmin, dmax)
+            res,dom = [],[]
+            for p_id in index:
+                if not valid_mask[p_id]:
+                    res.append([])
+                    dom.append([])
+                    continue
+                sam_min,sam_max = np.floor(vmin[p_id]), np.ceil(vmax[p_id])
+                sam_cnt = int(sam_max-sam_min+1)
+                dom.append(self.DfromV(np.arange(sam_min, sam_max+1), p_id))
+                err = np.empty(sam_cnt, 'f')
+
+                ref_pos = vec(xr[p_id], yr[p_id]) - vec(dxy_local[:,p_id])*offset
+                cur_pos = vec(nPinf[:,p_id]) + vec(dxy[:,p_id])*np.arange(np.floor(vmin[p_id])-win_width, np.ceil(vmax[p_id])+win_width+1)
+                ref = sample(imr, ref_pos[0], ref_pos[1])
+                cur = sample(imc, cur_pos[0], cur_pos[1])
+                for i in xrange(sam_cnt):
+                    diff = ref - cur[i:i+2*win_width+1]
+                    err[i] = np.sum(diff**2)
+                res.append(err)
+            if len(index)==1:
+                return res[0],dom[0]
+            else:
+                return res,dom
+        self.searchEPL = searchEPL
 
 class EpilineDrawer(object):
     def __init__(self, frames, wGc, K, p0=None):
@@ -190,12 +229,15 @@ class EpilineDrawer(object):
         slices= len(frames)-2
 
         f = plt.figure()
-        a1 = plt.subplot(121)
-        a1.imshow(frames[0], interpolation='none', aspect=1)
-        a1.autoscale(False)
-        a1.set_title('pick a point in this image')
+        gs = plt.GridSpec(2,2)
+        a1,a2 = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
+        a3 = f.add_subplot(gs[1,:])
+        #plt.tight_layout()
 
-        a2 = plt.subplot(122)
+        a1.imshow(frames[0], interpolation='none', aspect=1)
+        a1.set_title('pick a point in this image')
+        a1.autoscale(False)
+
         i2 = a2.imshow(frames[1], interpolation='none', aspect=1)
         a2.autoscale(False)
 
@@ -209,18 +251,22 @@ class EpilineDrawer(object):
         line1, = a2.plot([],'r-')
         dots, = a2.plot([],'b.',ms=5)
         Z = np.array([1e-2, 1e-1, 1e0, 1e1, 1e2])
+        res,dom = {},{}
+
+        for index in range(1, len(frames)):
+            rGc = relG(wGc[0], wGc[index])
+            ec = EpilineCalculator(xr, yr, rGc, K)
+            res[index], dom[index] = ec.searchEPL(frames[0].astype('f'), frames[index].astype('f'),3,0)
+            self.ecs[index] = ec
+        curv1, = a3.plot(res[1])
 
         def update(index):
             i2.set_data(frames[index])
             a2.set_title('frame %s' % index)
+
             rGc = relG(wGc[0], wGc[index])
-
-            if index in self.ecs:
-                ec = self.ecs[index]
-            else:
-                ec = EpilineCalculator(xr, yr, rGc, K)
-                self.ecs[index] = ec
-
+            ec = self.ecs[index]
+            dom_, res_ = dom[index], res[index]
             vmin, vmax, d_min, d_max, valid_mask = ec.getLimits(frames[index].shape)
             if valid_mask:
                 pmin = ec.XYfromV(vmin)
@@ -230,10 +276,14 @@ class EpilineDrawer(object):
                 pcur = K.dot(transform(cGr, backproject(xr, yr, K)*Z))
                 pcur /= pcur[2]
                 dots.set_data(pcur[0],pcur[1])
+                curv1.set_data(dom_, res_)
+                a3.set_xlim(dom_[0], dom_[-1])
             else:
                 print 'epiline not valid'
                 line1.set_data([],[])
                 dots.set_data([],[])
+                curv1.set_data([],[])
+
             f.canvas.draw()
 
         def onscroll(event):

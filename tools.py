@@ -17,7 +17,7 @@ def sim(*arg,**kwarg):
     return np.hstack(arg)
 
 def loaddata1():
-    data = scipy.io.loadmat('data.mat')
+    data = scipy.io.loadmat('/home/nubot/data/workspace/gltes/data.mat')
     frames, = data['I']
     G, = data['G']
     K = data['K']
