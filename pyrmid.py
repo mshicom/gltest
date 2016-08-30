@@ -26,7 +26,7 @@ frames = [f.astype('f') for f in frames]
 rGc = [relPos(wGc[0], g) for g in wGc]
 
 pis(frames[0])
-x,y = plt.ginput(0,-1)[0]
+#x,y = plt.ginput(0,-1)[0]
 ims = {0:frames}
 Ks  = {0:K}
 ps = {0: projective(x,y)}
@@ -38,11 +38,13 @@ for level in range(1,5):
     EpilineDrawer(ims[level], wGc, Ks[level], ps[level][:2].ravel())
 
 
-dmin,dmax = 0.0, 1e6
+dmin,dmax = 0.2, 10
 level = 4
+cnt = 0
 for level in reversed(range(5)):
     ec = EpilineCalculator(ps[level][0], ps[level][1], rGc[-1], Ks[level])
     res, dom = ec.searchEPL(ims[level][0], ims[level][-1], dmin=dmin, dmax=dmax)
+    cnt += len(res)
     if len(res) == 0:
         break
     ''' find the basin '''
@@ -54,5 +56,6 @@ for level in reversed(range(5)):
     left  = peak_pos[np.maximum(0, best_seq-1)]
     right = peak_pos[np.minimum(len(peak_pos)-1, best_seq+1)]
     dmin, d, dmax = dom[left], dom[best_pos], dom[right]
-    print level,dmin,d,dmax
+    print level,dmin,d,dmax, len(res)
 print 1.0/d, sample(Zs[0],x,y)
+print 'visted point in total',cnt
