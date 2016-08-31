@@ -61,7 +61,7 @@ def transform(G,P):
     return G[:3,:3].dot(P)+G[:3,3][:,np.newaxis]
 
 def conditions(*args):
-    return reduce(np.logical_and, args)
+    return np.logical_and.reduce(args)
 
 def normalize(P):
     '''normalize N points seperately, dim(P)=3xN'''

@@ -200,6 +200,7 @@ class Frame(object):
         p0 = int(np.where(conditions(self.px==x,self.py==y))[0])
         return p0
 
+    @timing
     def searchEPL(self, f1, K, dmin=0.0, dmax=1e6, win_width=4, levels=5):
         if self.px is None:
             self.extractPts(K)
@@ -226,15 +227,15 @@ class Frame(object):
                 d_min[p_id] = np.maximum(ec.DfromV(r_list[0][p_id], p_id), dmin[p_id])
                 d_max[p_id] = np.minimum(ec.DfromV(r_list[1][p_id], p_id), dmax[p_id])
 
-                print d_min[p_id], d[p_id] ,d_max[p_id]
-                print searchEPL.vlist
+#                print d_min[p_id], d[p_id] ,d_max[p_id]
+#                print searchEPL.vlist
         return d,vm,var
 
 def getG(f0,f1):
     '''return 1G0, which p1 = 1G0 * p0  '''
     return np.dot(inv(f0.wGc), f1.wGc)
 
-@timing
+#@timing
 def searchEPL(px, py, imr, imc, rGc, K, dmin=0, dmax=1e6, win_width=4):
     # px, py, imr, imc, rGc, win_width, debug, dmin, dmax= pref[0], pref[1], f0.im, f1.im, getG(f0,f1), 4, True, None,None
     px,py = np.atleast_1d(px, py)
@@ -245,6 +246,14 @@ def searchEPL(px, py, imr, imc, rGc, K, dmin=0, dmax=1e6, win_width=4):
 
     pb,dxy,dxy_local = ec.nPinf, ec.dxy, ec.dxy_local
     var = (d_max-d_min)/(vmax-vmin)
+
+    '''border check'''
+    h,w = imr.shape
+    ppx = px + dxy_local[0]*vec(-win_width, win_width)
+    ppy = py + dxy_local[1]*vec(-win_width, win_width)
+    valid_mask = conditions(valid_mask,
+                            ppx[0]>=0, ppx[0]<=w, ppx[1]>=0, ppx[1]<=w,
+                            ppy[0]>=0, ppy[0]<=h, ppy[1]>=0, ppy[1]<=h)
 
     node_cnt = len(px)
     best = np.empty(node_cnt,'i')
@@ -274,7 +283,7 @@ def searchEPL(px, py, imr, imc, rGc, K, dmin=0, dmax=1e6, win_width=4):
                             const std::vector<float> &cur,
                             float *out, size_t &argmin, float &min_diff)
         {
-            int out_size = cur.size()-ref.size();
+            size_t out_size = cur.size()-ref.size();
             assert(out_size>0);
 
             min_diff = std::numeric_limits<float>::infinity();
@@ -311,7 +320,7 @@ def searchEPL(px, py, imr, imc, rGc, K, dmin=0, dmax=1e6, win_width=4):
         } }
         '''
     ima,imb,width = imr, imc, imr.shape[1]
-    if 1:
+    if 0:
         code = r'''
             const int win_width = %(win_width)d;
             const int win_size = 2*win_width+1;
@@ -362,7 +371,6 @@ def searchEPL(px, py, imr, imc, rGc, K, dmin=0, dmax=1e6, win_width=4):
                         compiler='gcc', extra_compile_args=['-std=gnu++11 -msse2 -O3'])
 
             searchEPL.vlist.append(err)
-        searchEPL.rlist=(best_left, best_right)
     else:
         code = r'''
         size_t M = node_cnt;
@@ -383,10 +391,8 @@ def searchEPL(px, py, imr, imc, rGc, K, dmin=0, dmax=1e6, win_width=4):
             int sam_min = std::floor(VMIN1(p_id));
             int sam_max = std::ceil(VMAX1(p_id));
             int sample_size = sam_max-sam_min+1;
-            if(sample_size<1){
-                BEST1(p_id) = -1;
-                continue;   // discard pixel whose epi-line length is 0
-            }
+            assert(sample_size>=0);
+
             cur_samples.resize(sample_size+2*win_width);
             err.resize(sample_size);
             for(int i=0; i<sample_size+2*win_width; i++)
@@ -400,21 +406,27 @@ def searchEPL(px, py, imr, imc, rGc, K, dmin=0, dmax=1e6, win_width=4):
                                         PY1(p_id)-(pos-win_width)*DXY_LOCAL2(1,p_id));
 
             /* 2. go through all the points in cur */
-            convolution(ref_samples, cur_samples, &err[0], BEST1(p_id));
-            BEST1(p_id) += sam_min;
+            size_t argmin;
+            convolution(ref_samples, cur_samples, &err[0], argmin, BEST_ERR1(p_id));
 
-            /* 3. find the best N element */
-            #if 0
-                auto result = std::min_element(std::begin(err), std::end(err));
-                BEST1(p_id) = sam_min + std::distance(std::begin(err), result);
-                COST1(p_id) = *result;
-            #endif
+            /* 3. find the boundary of the basin */
+            size_t left, right;
+            searchBoundary(&err[0], sample_size, argmin, left, right);
+
+            BEST1(p_id) = sam_min + argmin;
+            BEST_LEFT1(p_id) = sam_min + left;
+            BEST_RIGHT1(p_id) = sam_min + right;
         }
         '''% {'win_width': win_width }
 
-        weave.inline(code, ['ima','imb','width','node_cnt','pb','vmax','vmin','dxy','dxy_local','px','py','best','valid_mask'],#
+        weave.inline(code, ['ima','imb','width','node_cnt','pb',
+                            'vmax','vmin','dxy','dxy_local','px','py',
+                            'best','valid_mask','best_err','best_left','best_right'],#
             support_code=scode, headers=['<algorithm>','<cmath>','<vector>','<map>','<csignal>','<set>'],
             compiler='gcc', extra_compile_args=['-std=gnu++11 -msse2 -O3'])
+
+    searchEPL.rlist=(best_left, best_right)
+
 #    valid_mask = conditions(valid_mask, best_err<0.0138) # 9*(10/255.0)**2
     res = ec.DfromV(best).ravel()
     return res, valid_mask, var**2
@@ -446,8 +458,8 @@ if __name__ == "__main__":
         fs.sort(key=lambda f: baseline(f0,f))
         [baseline(f0,f) for f in fs]
 #%%
-    f0.px,f0.py = np.atleast_1d(170,267)
-    d,vm,var = f0.searchEPL(fs[-1], K, dmin=iD(5), dmax=iD(2.1), win_width=3, levels=5) #
+    #f0.px,f0.py = np.atleast_1d(170,267)
+    d,vm,var = f0.searchEPL(fs[-1], K, dmin=iD(5), dmax=iD(0.1), win_width=3, levels=5) #
     plotxyzrgb(f0.makePC(1.0/d, conditions(vm, d>iD(5), d<iD(0.1))))
 
 
@@ -457,11 +469,11 @@ if __name__ == "__main__":
 
     i0 = f0.im[f0.py, f0.px]
     i_valid = sample(fs[2].im, p_valid[0],p_valid[1])
-    mask = conditions(vm, ~np.isnan(i_valid), np.abs(i_valid-i0)<0.1)
+    mask = conditions(vm, ~np.isnan(i_valid), np.abs(i_valid-i0)<5.0/255)
 
     pis(sim(f0.im,fs[2].im))
     plt.plot(f0.px, f0.py,'r.',ms=2)
-    plt.plot(p_valid[0][mask]+w, p_valid[1][mask],'b.',ms=2)
+    plt.plot(p_valid[0]+w, p_valid[1],'b.',ms=2)
     plotxyzrgb(f0.makePC(1.0/d, mask))
 
     d2,vm2,var2 = f0.searchEPL(fs[2], K, dmin=iD(5), dmax=iD(0.1), win_width=4) #

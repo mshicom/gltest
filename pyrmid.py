@@ -26,10 +26,10 @@ frames = [f.astype('f') for f in frames]
 rGc = [relPos(wGc[0], g) for g in wGc]
 
 pis(frames[0])
-#x,y = plt.ginput(0,-1)[0]
+x,y = plt.ginput(0,-1)[0]
 ims = {0:frames}
 Ks  = {0:K}
-ps = {0: projective(x,y)}
+ps  = {0: projective(x,y)}
 scale_mat = np.diag([0.5, 0.5, 1])
 for level in range(1,5):
     ims[level] = [cv2.pyrDown(im) for im in ims[level-1]]
@@ -39,7 +39,6 @@ for level in range(1,5):
 
 
 dmin,dmax = 0.2, 10
-dmin,dmax = iD(5), iD(2.1)
 level = 4
 cnt = 0
 for level in reversed(range(5)):
