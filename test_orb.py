@@ -462,6 +462,14 @@ if __name__ == "__main__":
     d,vm,var = f0.searchEPL(fs[-1], K, dmin=iD(5), dmax=iD(0.1), win_width=3, levels=5) #
     plotxyzrgb(f0.makePC(1.0/d, conditions(vm, d>iD(5), d<iD(0.1))))
 
+    from ceres import ba
+    cGr = [getG(f,f0) for f in fs]
+    d_ = d.copy()
+    for p_id in xrange(len(f0.px)):
+        print p_id
+        if vm[p_id]:
+            d_[p_id] = ba(f0.px[p_id], f0.py[p_id], d[p_id], frames, cGr, K)
+    plotxyzrgb(f0.makePC(1.0/d_, conditions(vm, d_>iD(5), d_<iD(0.1))))
 
     ec0 = searchEPL.ec
     ec1 = EpilineCalculator(f0.px, f0.py, getG(f0,fs[2]), K)
