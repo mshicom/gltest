@@ -300,3 +300,16 @@ class EpilineDrawer(object):
 if __name__ == "__main__":
     frames, wGc, K, _ = loaddata1()
     e=EpilineDrawer(frames, wGc, K)
+
+    def test_EpilineCalculator():
+        try:
+            ec2 = EpilineCalculator(f0.px, f0.py, getG(f0,f1), K) #
+
+            tx,ty = trueProj(f0.px, f0.py, getG(f1,f0), Zr=f0.Z)
+            td = 1.0/sample(f0.Z, f0.px, f0.py)
+            d = ec2.DfromX(tx); assert( np.allclose(td, d) )
+            v = ec2.VfromD(td); assert( np.allclose(v, ec2.VfromX(tx)) )
+            xy = ec2.XYfromD(td); assert( np.allclose(xy[0], tx) and np.allclose(xy[1], ty))
+            z = ec2.ZfromXY(tx,ty); assert( np.allclose(1.0/td, z) )
+        except:
+            pass

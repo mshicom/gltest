@@ -39,6 +39,7 @@ for level in range(1,5):
 
 
 dmin,dmax = 0.2, 10
+dmin,dmax = iD(5), iD(2.1)
 level = 4
 cnt = 0
 for level in reversed(range(5)):
@@ -51,7 +52,7 @@ for level in reversed(range(5)):
     peak_pos, = scipy.signal.argrelmax(np.insert(res,0,res[1]),mode='warp') # peak
     peak_pos -= 1
     best_pos = np.argmin(res)
-    best_seq = numpy.searchsorted(peak_pos, best_pos)
+    best_seq = np.searchsorted(peak_pos, best_pos)
     peak_pos = np.insert(peak_pos, best_seq, best_pos)
     left  = peak_pos[np.maximum(0, best_seq-1)]
     right = peak_pos[np.minimum(len(peak_pos)-1, best_seq+1)]

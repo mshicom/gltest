@@ -37,7 +37,7 @@ def scharr(im):
 import scipy.signal
 import cv2
 class Frame(object):
-    __slots__ = ['im', '_pyr', 'wGc',     \
+    __slots__ = ['im', '_pyr', 'wGc', 'dx','dy',     \
                  'px','py','P',     \
                  'nbrs','v', 'Z']
     def __init__(self, img, wGc=np.eye(4), Z=None):
@@ -74,6 +74,7 @@ class Frame(object):
         y,x = np.where(mask)
         self.py, self.px = y,x
         self.v = []
+        self.dx, self.dy = dx[y,x], dy[y,x]
         ''' 2. corresponding back-projected 3D point'''
         self.P = backproject(x, y, K)
 
@@ -109,42 +110,6 @@ class Frame(object):
         P0 = self.P*self.Z[self.py, self.px]
         P1 = K.dot(G[0:3,0:3].dot(P0)+G[0:3,3][:,np.newaxis])
         return P1[:2]/P1[2]
-
-    def searchEPL(self, f1, K, dmin=0.0, dmax=1e6, win_width=4):
-        if self.px is None:
-            self.extractPts(K)
-        rGc = getG(self, f1)
-        p_cnt = len(self.px)
-
-        dmin = np.full(p_cnt,dmin,'f') if np.isscalar(dmin) else dmin
-        dmax = np.full(p_cnt,dmax,'f') if np.isscalar(dmax) else dmax
-
-        for level in reversed(range(5)):
-            factor = 0.5**level
-            px = self.px*factor
-            py = self.py*factor
-            K_ = np.diag([factor,factor,1.0]).dot(K)
-
-            imr = self.pyr_im(level)
-            imc = f1.pyr_im(level)
-            d,vm,var = searchEPL(px, py, imr, imc, rGc, K_, dmin, dmax, win_width)
-
-            v_list, r_list, ec = searchEPL.vlist, searchEPL.rlist, searchEPL.ec
-            for p_id in xrange(p_cnt):
-                if not vm[p_id]:
-                    continue
-                res = v_list[p_id]
-                sam_min,sam_max = r_list[p_id]
-                peak_pos, = scipy.signal.argrelmax(np.insert(res,0,res[1]),mode='warp') # peak
-                peak_pos -= 1
-                best_pos = np.argmin(res)
-                best_seq = numpy.searchsorted(peak_pos, best_pos)
-                peak_pos = np.insert(peak_pos, best_seq, best_pos)
-                left  = sam_min + peak_pos[np.maximum(0, best_seq-1)]
-                right = sam_min + peak_pos[np.minimum(len(peak_pos)-1, best_seq+1)]
-                dmin[p_id], dmax[p_id] = ec.DfromV(left, p_id), ec.DfromV(right, p_id)
-#                print dmin[p_id], d[p_id], dmax[p_id],len(res)
-        return d,vm,var
 
     def makePC(self, depth, valid_mask):#
         vm_ind, = np.where(valid_mask)
@@ -235,6 +200,36 @@ class Frame(object):
         p0 = int(np.where(conditions(self.px==x,self.py==y))[0])
         return p0
 
+    def searchEPL(self, f1, K, dmin=0.0, dmax=1e6, win_width=4, levels=5):
+        if self.px is None:
+            self.extractPts(K)
+        rGc = getG(self, f1)
+        p_cnt = len(self.px)
+
+        dmin = np.full(p_cnt, dmin,'f') if np.isscalar(dmin) else dmin
+        dmax = np.full(p_cnt, dmax,'f') if np.isscalar(dmax) else dmax
+
+        d_min, d_max = dmin.copy(), dmax.copy()
+        for level in reversed(range(levels)):
+            factor = 0.5**level
+            px = self.px*factor
+            py = self.py*factor
+            K_ = np.diag([factor,factor,1.0]).dot(K)
+
+            imr = self.pyr_im(level)
+            imc = f1.pyr_im(level)
+            d,vm,var = searchEPL(px, py, imr, imc, rGc, K_, d_min, d_max, win_width)
+
+            if level>0:
+                r_list, ec = searchEPL.rlist, searchEPL.ec
+                p_id, = np.where(vm)
+                d_min[p_id] = np.maximum(ec.DfromV(r_list[0][p_id], p_id), dmin[p_id])
+                d_max[p_id] = np.minimum(ec.DfromV(r_list[1][p_id], p_id), dmax[p_id])
+
+                print d_min[p_id], d[p_id] ,d_max[p_id]
+                print searchEPL.vlist
+        return d,vm,var
+
 def getG(f0,f1):
     '''return 1G0, which p1 = 1G0 * p0  '''
     return np.dot(inv(f0.wGc), f1.wGc)
@@ -254,6 +249,9 @@ def searchEPL(px, py, imr, imc, rGc, K, dmin=0, dmax=1e6, win_width=4):
     node_cnt = len(px)
     best = np.empty(node_cnt,'i')
     best_err = np.empty(node_cnt,'f')
+    best_left = np.empty(node_cnt,'i')
+    best_right = np.empty(node_cnt,'i')
+
     searchEPL.rlist, searchEPL.vlist,searchEPL.ec = [],[],ec
 
     scode = r'''
@@ -271,13 +269,16 @@ def searchEPL(px, py, imr, imc, rGc, K, dmin=0, dmax=1e6, win_width=4):
             				+ (1-dx-dy+dxdy) * bp[0];
             	return res;
         }
+
         inline void convolution(const std::vector<float> &ref,
                             const std::vector<float> &cur,
-                            float *out, int &argmin, float &min_diff)
+                            float *out, size_t &argmin, float &min_diff)
         {
-            min_diff = std::numeric_limits<float>::infinity();
+            int out_size = cur.size()-ref.size();
+            assert(out_size>0);
 
-            for(size_t i=0; i <= cur.size()-ref.size(); i++ ){
+            min_diff = std::numeric_limits<float>::infinity();
+            for(size_t i=0; i <= out_size; i++ ){
                 float diff = 0;
                 for(size_t j=0; j < ref.size();j++ ){
                     float err = ref[j] - cur[i+j];
@@ -289,9 +290,25 @@ def searchEPL(px, py, imr, imc, rGc, K, dmin=0, dmax=1e6, win_width=4):
                 if (diff < min_diff){
                     min_diff = diff;
                     argmin = i;
-                }
+        } } }
+
+        inline void searchBoundary(float *v, const size_t v_cnt, size_t &origin, size_t &left, size_t &right )
+        {
+            left = origin;
+            while( left>0 ){
+                if(v[left-1] < v[left])
+                    break;
+                else
+                    left--;
             }
-        }
+
+            right = origin;
+            while( right<v_cnt-1 ){
+                if(v[right+1] < v[right])
+                    break;
+                else
+                    right++;
+        } }
         '''
     ima,imb,width = imr, imc, imr.shape[1]
     if 1:
@@ -317,42 +334,35 @@ def searchEPL(px, py, imr, imc, rGc, K, dmin=0, dmax=1e6, win_width=4):
                                         PY1(p_id)-(pos-win_width)*DXY_LOCAL2(1,p_id));
 
             /* 2. go through all the points in cur */
-            convolution(ref_samples, cur_samples, &ERR1(0), BEST1(p_id), BEST_ERR1(p_id));
-            BEST1(p_id) += sam_min;
+            size_t argmin;
+            convolution(ref_samples, cur_samples, &ERR1(0), argmin, BEST_ERR1(p_id));
+
+            /* 3. find the boundary of the basin */
+            size_t left, right;
+            searchBoundary(&ERR1(0), sam_cnt, argmin, left, right);
+
+            BEST1(p_id) = sam_min + argmin;
+            BEST_LEFT1(p_id) = sam_min + left;
+            BEST_RIGHT1(p_id) = sam_min + right;
+
             '''% {'win_width': win_width }
 
         for p_id in xrange(node_cnt):
             if not valid_mask[p_id]:
                 searchEPL.vlist.append([])
-                searchEPL.rlist.append([])
                 continue
             sam_min,sam_max = int(np.floor(vmin[p_id])), int(np.ceil(vmax[p_id]))
             sam_cnt = int(sam_max-sam_min+1)
             err = np.empty(sam_cnt, 'f')
-
-#            if 0:
-#                p0 = vec(px[p_id],py[p_id])
-#                ref_pos = p0 - vec(dxy_local[:,n])*np.arange(-win_width, win_width+1)
-#                ref_samples = sample(imr, ref_pos[0], ref_pos[1])
-#                cur_pos = vec(pb[:,n]) + vec(dxy[:,n])*np.arange(sam_min-win_width, sam_max+win_width+1)
-#                cur_samples = sample(imc, cur_pos[0], cur_pos[1])
-#
-#                for i in xrange(sam_cnt):
-#                    diff = ref_samples - cur_samples[i:i+2*win_width+1]
-#                    err[i] = (diff*diff).sum()
-#                mininum = np.nanargmin(err)
-#                best[n] = sam_min+mininum  #np.argpartition(err, 5)
-#                cost[n] = err[mininum]
-#            else:
             weave.inline(code, ['ima','imb','width',
                                 'p_id','sam_min','sam_max','sam_cnt',
                                 'pb','dxy','dxy_local','px','py',
-                                'best','err','best_err'],#
+                                'best','err','best_err','best_left','best_right'],#
                         support_code=scode, headers=['<algorithm>','<cmath>','<vector>','<map>','<csignal>','<set>'],
                         compiler='gcc', extra_compile_args=['-std=gnu++11 -msse2 -O3'])
 
             searchEPL.vlist.append(err)
-            searchEPL.rlist.append((sam_min,sam_max))
+        searchEPL.rlist=(best_left, best_right)
     else:
         code = r'''
         size_t M = node_cnt;
@@ -376,7 +386,6 @@ def searchEPL(px, py, imr, imc, rGc, K, dmin=0, dmax=1e6, win_width=4):
             if(sample_size<1){
                 BEST1(p_id) = -1;
                 continue;   // discard pixel whose epi-line length is 0
-
             }
             cur_samples.resize(sample_size+2*win_width);
             err.resize(sample_size);
@@ -406,58 +415,10 @@ def searchEPL(px, py, imr, imc, rGc, K, dmin=0, dmax=1e6, win_width=4):
         weave.inline(code, ['ima','imb','width','node_cnt','pb','vmax','vmin','dxy','dxy_local','px','py','best','valid_mask'],#
             support_code=scode, headers=['<algorithm>','<cmath>','<vector>','<map>','<csignal>','<set>'],
             compiler='gcc', extra_compile_args=['-std=gnu++11 -msse2 -O3'])
-    valid_mask = conditions(valid_mask, best_err<0.0138) # 9*(10/255.0)**2
+#    valid_mask = conditions(valid_mask, best_err<0.0138) # 9*(10/255.0)**2
     res = ec.DfromV(best).ravel()
     return res, valid_mask, var**2
 
-def test_EpilineCalculator():
-    f,a = plt.subplots(1, 1, num='test_EpilineCalculator')
-    a.imshow(sim(f0.im, f1.im))
-
-    pref = np.round(plt.ginput(1, timeout=-1)[0])
-    a.plot(pref[0], pref[1],'r.')
-
-    ec = EpilineCalculator(pref[0], pref[1], getG(f0,f1), K) #
-    vmin,vmax, d_min, d_max, valid_mask = ec.getLimits(f0.im.shape)
-    if valid_mask:
-        pmin = ec.XYfromV(vmin)
-        pmax = ec.XYfromV(vmax)
-        a.plot([pmin[0]+640,pmax[0]+640], [pmin[1],pmax[1]],'g-')
-
-        cGr = getG(f1,f0)
-        Z = np.linspace(0.5, 10.0, 40)
-        pcur = K.dot(transform(cGr, backproject(pref[0], pref[1], K)*Z))
-        pcur /= pcur[2]
-        a.plot(pcur[0]+640, pcur[1],'b.')
-
-        plt.pause(0.01)
-    else:
-        print 'epiline not valid'
-
-    try:
-        ec2 = EpilineCalculator(f0.px, f0.py, getG(f0,f1), K) #
-
-        tx,ty = trueProj(f0.px, f0.py, getG(f1,f0), Zr=f0.Z)
-        td = 1.0/sample(f0.Z, f0.px, f0.py)
-        d = ec2.DfromX(tx); assert( np.allclose(td, d) )
-        v = ec2.VfromD(td); assert( np.allclose(v, ec2.VfromX(tx)) )
-        xy = ec2.XYfromD(td); assert( np.allclose(xy[0], tx) and np.allclose(xy[1], ty))
-        z = ec2.ZfromXY(tx,ty); assert( np.allclose(1.0/td, z) )
-    except:
-        pass
-
-def test_EPLMatch():
-    f = plt.figure(num='epl match'); #f.clear()
-    gs = plt.GridSpec(2,2)
-    al,ar = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
-    ab = f.add_subplot(gs[1,:])
-    plt.tight_layout()
-    al.imshow(f0.im, interpolation='none'); ar.imshow(f1.im, interpolation='none')
-
-    pref = plt.ginput(1, timeout=-1)[0]
-    best0,vm,var = searchEPL(pref[0], pref[1], f0.im, f1.im, getG(f0,f1), K, iD(10),iD(0.1), win_width=4)
-#        ar.plot(f1.px,f1.py,'b.',ms=2)
-    plt.pause(0.01)
 
 if __name__ == "__main__":
     frames, wGc, K, Zs = loaddata1()
@@ -485,7 +446,8 @@ if __name__ == "__main__":
         fs.sort(key=lambda f: baseline(f0,f))
         [baseline(f0,f) for f in fs]
 #%%
-    d,vm,var = f0.searchEPL(fs[-1], K, dmin=iD(5), dmax=iD(0.1), win_width=3) #
+    f0.px,f0.py = np.atleast_1d(170,267)
+    d,vm,var = f0.searchEPL(fs[-1], K, dmin=iD(5), dmax=iD(2.1), win_width=3, levels=5) #
     plotxyzrgb(f0.makePC(1.0/d, conditions(vm, d>iD(5), d<iD(0.1))))
 
 
