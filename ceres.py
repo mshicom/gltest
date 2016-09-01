@@ -11,7 +11,8 @@ import matplotlib.pyplot as plt
 from scipy.weave import inline
 from tools import *
 
-def ba(x,y, d0, frames,cGr, K):
+@timing
+def ba(xr, yr, d, mask, frames, cGr, K):
     scode = r"""
     #include "ceres/ceres.h"
     #include "ceres/cubic_interpolation.h"
@@ -166,35 +167,40 @@ def ba(x,y, d0, frames,cGr, K):
             double *g = (double *)PyArray_DATA(G);
             G_set.push_back(g);
         }
-        Problem problem;
-         double d = d0;
-         for(size_t i=1; i<max; i++)
-         {
-              CostFunction* cost_function = new PhotometricCostFunction<9>(
-                          image_set[0]->Interpolator() , image_set[i]->Interpolator(),
-                          K, G_set[i], x, y);
-              problem.AddResidualBlock(cost_function, /*NULL*/new ceres::HuberLoss(100), &d);
-              problem.SetParameterLowerBound(&d, 0, 0.02);
-              problem.SetParameterUpperBound(&d, 0, 1e2);
-         }
 
-         Solver::Options options;
-          options.minimizer_progress_to_stdout = false;
-        //  options.linear_solver_type = ceres::DENSE_QR;
-          options.use_nonmonotonic_steps = 1;
-          Solver::Summary summary;
-          Solve(options, &problem, &summary);
-          return_val = d;
+        Solver::Options options;
+        options.minimizer_progress_to_stdout = false;
+    //  options.linear_solver_type = ceres::DENSE_QR;
+        options.use_nonmonotonic_steps = 1;
+        Solver::Summary summary;
+
+        const size_t p_cnt = Nxr[0];
+        for(size_t pid=0; pid<p_cnt; pid++)
+        {
+            if(MASK1(pid))
+            {
+                Problem problem;
+
+                for(size_t i=1; i<max; i++) {
+                    CostFunction* cost_function = new PhotometricCostFunction<9>(
+                          image_set[0]->Interpolator() , image_set[i]->Interpolator(),
+                          K, G_set[i], XR1(pid), YR1(pid));
+                    problem.AddResidualBlock(cost_function, new ceres::HuberLoss(100), &(D1(pid)));
+                    problem.SetParameterLowerBound(&(D1(pid)), 0, 0.02);
+                    problem.SetParameterUpperBound(&(D1(pid)), 0, 1e2);
+                }
+                Solve(options, &problem, &summary);
+            }
+        }
     """
 
     frames = [np.ascontiguousarray(f, 'd') for f in frames]
     cGr = [np.ascontiguousarray(g, 'd') for g in cGr]
     K = np.ascontiguousarray(K, 'd')
 
-    d = inline(code,['frames','cGr','K', 'd0','x','y'],
+    inline(code,['frames','cGr','K', 'd','xr','yr','mask'],
            support_code=scode,
            include_dirs = ["/usr/include/eigen3/"],
            libraries = ['ceres','glog','opencv_core','opencv_highgui','opencv_imgproc','opencv_imgproc'],
            extra_compile_args=['-std=gnu++11 -msse2 -O3'],
            extra_link_args = [r'-rdynamic -lspqr -ltbb -ltbbmalloc -lcholmod -lccolamd -lcamd -lcolamd -lamd -llapack'])
-    return d

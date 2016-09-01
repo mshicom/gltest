@@ -453,23 +453,34 @@ if __name__ == "__main__":
     f0,f1 = fs[0],fs[3]
     f0.extractPts(K)
 
-    if 0:
+    if 1:
         baseline = lambda f0,f1: np.linalg.norm(getG(f0, f1)[:3,3])
         fs.sort(key=lambda f: baseline(f0,f))
         [baseline(f0,f) for f in fs]
 #%%
     #f0.px,f0.py = np.atleast_1d(170,267)
-    d,vm,var = f0.searchEPL(fs[-1], K, dmin=iD(5), dmax=iD(0.1), win_width=3, levels=5) #
+    d,vm,var = f0.searchEPL(fs[1], K, dmin=iD(5), dmax=iD(0.1), win_width=3, levels=5) #
     plotxyzrgb(f0.makePC(1.0/d, conditions(vm, d>iD(5), d<iD(0.1))))
 
     from ceres import ba
     cGr = [getG(f,f0) for f in fs]
+    ims = {0:frames}
+    Ks  = {0:K}
+    ps  = {0: [f0.px, f0.py]}
+    scale_mat = np.diag([0.5, 0.5, 1])
+    for level in range(1,5):
+        ims[level] = [cv2.pyrDown(im) for im in ims[level-1]]
+        Ks[level] = scale_mat.dot(Ks[level-1])
+        ps[level] = [0.5*p for p in ps[level-1]]
     d_ = d.copy()
-    for p_id in xrange(len(f0.px)):
-        print p_id
-        if vm[p_id]:
-            d_[p_id] = ba(f0.px[p_id], f0.py[p_id], d[p_id], frames, cGr, K)
-    plotxyzrgb(f0.makePC(1.0/d_, conditions(vm, d_>iD(5), d_<iD(0.1))))
+    d_[:] = 0.001
+    ds = {5:d_.copy()}
+    for level_ba in reversed(range(5)):
+        if 0:
+            ba(ps[level_ba][0], ps[level_ba][1], d_, vm, ims[level_ba], cGr, Ks[level_ba])
+            ds[level_ba] = d_.copy()
+        plotxyzrgb(f0.makePC(1.0/ds[level_ba], conditions(vm, ds[level_ba]>iD(5), ds[level_ba]<iD(0.1))))
+        plt.waitforbuttonpress()
 
     ec0 = searchEPL.ec
     ec1 = EpilineCalculator(f0.px, f0.py, getG(f0,fs[2]), K)
