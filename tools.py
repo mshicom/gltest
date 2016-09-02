@@ -33,6 +33,7 @@ def loaddata2():
         G = data["Gs"]
         K = data['K']
         r = data['r']
+        frames = [frames[i] for i in range(frames.shape[0])]
     return frames, G, K
 
 def loaddata3():

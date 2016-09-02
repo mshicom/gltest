@@ -16,8 +16,7 @@ import scipy.io
 from vtk_visualizer import plotxyzrgb,plotxyz
 
 from scipy import weave,sparse
-from tools import inv,vec,timing, backproject, sim,pf,pis
-from tools import relPos,trueProj,sample,iD, conditions,transform,loaddata1
+from tools import *
 from EpilineCalculator import EpilineCalculator,EpilineDrawer
 
 
@@ -192,16 +191,21 @@ class Frame(object):
 
     def getId(self, x=None,y=None):
         global p0
-        if x is None:
+        while x is None:
             plt.figure(num='pick a point');
             plt.imshow(self.im)
-            plt.plot(self.px,self.py,'b.')
+            plt.plot(self.px,self.py,'b.',ms=2)
             (x,y), = np.round(plt.ginput(1, timeout=0))
-        p0 = int(np.where(conditions(self.px==x,self.py==y))[0])
-        return p0
+            p = np.where(conditions(self.px==x,self.py==y))[0]
+            if not p:
+                plt.title("point not valid, pick another")
+                x = None
+        p0 = int(p)
+        print x,y,p
+        return p
 
     @timing
-    def searchEPL(self, f1, K, dmin=0.0, dmax=1e6, win_width=4, levels=5):
+    def searchEPL(self, f1, K, dmin=0.0, dmax=1e6, win_width=4, levels=5, keepErr=False):
         if self.px is None:
             self.extractPts(K)
         rGc = getG(self, f1)
@@ -219,7 +223,7 @@ class Frame(object):
 
             imr = self.pyr_im(level)
             imc = f1.pyr_im(level)
-            d,vm,var = searchEPL(px, py, imr, imc, rGc, K_, d_min, d_max, win_width)
+            d,vm,var = searchEPL(px, py, imr, imc, rGc, K_, d_min, d_max, win_width, keepErr)
 
             if level>0:
                 r_list, ec = searchEPL.rlist, searchEPL.ec
@@ -236,7 +240,7 @@ def getG(f0,f1):
     return np.dot(inv(f0.wGc), f1.wGc)
 
 #@timing
-def searchEPL(px, py, imr, imc, rGc, K, dmin=0, dmax=1e6, win_width=4):
+def searchEPL(px, py, imr, imc, rGc, K, dmin=0, dmax=1e6, win_width=4, keepErr=False):
     # px, py, imr, imc, rGc, win_width, debug, dmin, dmax= pref[0], pref[1], f0.im, f1.im, getG(f0,f1), 4, True, None,None
     px,py = np.atleast_1d(px, py)
 
@@ -320,7 +324,8 @@ def searchEPL(px, py, imr, imc, rGc, K, dmin=0, dmax=1e6, win_width=4):
         } }
         '''
     ima,imb,width = imr, imc, imr.shape[1]
-    if 0:
+
+    if keepErr:
         code = r'''
             const int win_width = %(win_width)d;
             const int win_size = 2*win_width+1;
@@ -426,15 +431,15 @@ def searchEPL(px, py, imr, imc, rGc, K, dmin=0, dmax=1e6, win_width=4):
             compiler='gcc', extra_compile_args=['-std=gnu++11 -msse2 -O3'])
 
     searchEPL.rlist=(best_left, best_right)
-
+    searchEPL.err = best_err
 #    valid_mask = conditions(valid_mask, best_err<0.0138) # 9*(10/255.0)**2
     res = ec.DfromV(best).ravel()
     return res, valid_mask, var**2
 
 
 if __name__ == "__main__":
-    frames, wGc, K, Zs = loaddata1()
-#    frames, wGc, K = loaddata2()
+#    frames, wGc, K, Zs = loaddata1()
+    frames, wGc, K = loaddata2()
 #    from orb_kfs import loaddata4
 #    frames, wGc, K = loaddata4(20)
 #    EpilineDrawer(frames[0:], wGc[0:], K)
@@ -458,13 +463,18 @@ if __name__ == "__main__":
         fs.sort(key=lambda f: baseline(f0,f))
         [baseline(f0,f) for f in fs]
 #%%
-    #f0.px,f0.py = np.atleast_1d(170,267)
-    d,vm,var = f0.searchEPL(fs[1], K, dmin=iD(5), dmax=iD(0.1), win_width=3, levels=5) #
-    plotxyzrgb(f0.makePC(1.0/d, conditions(vm, d>iD(5), d<iD(0.1))))
-
     from ceres import ba
     cGr = [getG(f,f0) for f in fs]
-    ims = {0:frames}
+
+    #f0.px,f0.py = np.atleast_1d(170,267)
+    d,vm,var = f0.searchEPL(fs[1], K, dmin=iD(5), dmax=iD(0.1), win_width=1, levels=5) #
+    plotxyzrgb(f0.makePC(1.0/d, conditions(vm, d>iD(5), d<iD(0.1))))
+    dba = d.copy()
+    ba(f0.px, f0.py, dba, vm, [frames[0],frames[1]], [cGr[0], cGr[1]], K)
+    plotxyzrgb(f0.makePC(1.0/dba, conditions(vm, dba>iD(5), dba<iD(0.1))))
+
+
+    ims = {0:frames[:5]}
     Ks  = {0:K}
     ps  = {0: [f0.px, f0.py]}
     scale_mat = np.diag([0.5, 0.5, 1])
@@ -475,12 +485,20 @@ if __name__ == "__main__":
     d_ = d.copy()
     d_[:] = 0.001
     ds = {5:d_.copy()}
+    level_ba = 0
     for level_ba in reversed(range(5)):
-        if 0:
+        if level_ba not in ds and 1:
             ba(ps[level_ba][0], ps[level_ba][1], d_, vm, ims[level_ba], cGr, Ks[level_ba])
             ds[level_ba] = d_.copy()
         plotxyzrgb(f0.makePC(1.0/ds[level_ba], conditions(vm, ds[level_ba]>iD(5), ds[level_ba]<iD(0.1))))
         plt.waitforbuttonpress()
+#%%
+    p = f0.getId()
+    f0.px,f0.py = np.atleast_1d(52,256)
+
+
+
+#%%
 
     ec0 = searchEPL.ec
     ec1 = EpilineCalculator(f0.px, f0.py, getG(f0,fs[2]), K)
