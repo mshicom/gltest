@@ -260,12 +260,13 @@ def searchEPL(px, py, imr, imc, rGc, K, dmin=0, dmax=1e6, win_width=4, keepErr=F
                             ppy[0]>=0, ppy[0]<=h, ppy[1]>=0, ppy[1]<=h)
 
     node_cnt = len(px)
+    errs = []
     best = np.empty(node_cnt,'i')
     best_err = np.empty(node_cnt,'f')
     best_left = np.empty(node_cnt,'i')
     best_right = np.empty(node_cnt,'i')
 
-    searchEPL.rlist, searchEPL.vlist,searchEPL.ec = [],[],ec
+    ima,imb,width = imr, imc, imr.shape[1]
 
     scode = r'''
         inline float sample(const float* const mat, const int width, const float x, const float y)
@@ -323,83 +324,43 @@ def searchEPL(px, py, imr, imc, rGc, K, dmin=0, dmax=1e6, win_width=4, keepErr=F
                     right++;
         } }
         '''
-    ima,imb,width = imr, imc, imr.shape[1]
 
-    if keepErr:
-        code = r'''
-            const int win_width = %(win_width)d;
-            const int win_size = 2*win_width+1;
-            std::vector<float> ref_samples(win_size);
-            std::vector<float> cur_samples(1000);
-
-            // std::raise(SIGINT);
-
-            /* 1. Sampling the Intensity */
-            cur_samples.resize(sam_cnt+2*win_width);
-
-            for(int i=0; i<sam_cnt+2*win_width; i++)
-                cur_samples[i] = sample(&IMB1(0), width,
-                                        PB2(0,p_id)+(sam_min+i-win_width)*DXY2(0,p_id),
-                                        PB2(1,p_id)+(sam_min+i-win_width)*DXY2(1,p_id));
-
-            for(int pos=0; pos<win_size; pos++)
-                ref_samples[pos] = sample(&IMA1(0),width,
-                                        PX1(p_id)-(pos-win_width)*DXY_LOCAL2(0,p_id),
-                                        PY1(p_id)-(pos-win_width)*DXY_LOCAL2(1,p_id));
-
-            /* 2. go through all the points in cur */
-            size_t argmin;
-            convolution(ref_samples, cur_samples, &ERR1(0), argmin, BEST_ERR1(p_id));
-
-            /* 3. find the boundary of the basin */
-            size_t left, right;
-            searchBoundary(&ERR1(0), sam_cnt, argmin, left, right);
-
-            BEST1(p_id) = sam_min + argmin;
-            BEST_LEFT1(p_id) = sam_min + left;
-            BEST_RIGHT1(p_id) = sam_min + right;
-
-            '''% {'win_width': win_width }
-
-        for p_id in xrange(node_cnt):
-            if not valid_mask[p_id]:
-                searchEPL.vlist.append([])
-                continue
-            sam_min,sam_max = int(np.floor(vmin[p_id])), int(np.ceil(vmax[p_id]))
-            sam_cnt = int(sam_max-sam_min+1)
-            err = np.empty(sam_cnt, 'f')
-            weave.inline(code, ['ima','imb','width',
-                                'p_id','sam_min','sam_max','sam_cnt',
-                                'pb','dxy','dxy_local','px','py',
-                                'best','err','best_err','best_left','best_right'],#
-                        support_code=scode, headers=['<algorithm>','<cmath>','<vector>','<map>','<csignal>','<set>'],
-                        compiler='gcc', extra_compile_args=['-std=gnu++11 -msse2 -O3'])
-
-            searchEPL.vlist.append(err)
-    else:
-        code = r'''
-        size_t M = node_cnt;
+    code = r'''
+        const size_t M = node_cnt;
         const int win_width = %(win_width)d;
         const int win_size = 2*win_width+1;
         std::vector<float> ref_samples(win_size);
         std::vector<float> cur_samples(1000);
-        std::vector<float> err(1000);
+
+        #if %(KEEP_ERR)d
+            if (!PyList_Check(py_errs))
+                py::fail(PyExc_TypeError, "err must be a list");
+            const long int zero = 0;
+        #else
+            std::vector<float> err(1000);
+        #endif
 
         // std::raise(SIGINT);
 
         // foreach pixel in ref image
         for(size_t p_id=0; p_id<M; p_id++){
             if (!VALID_MASK1(p_id))
+            {
+                #if %(KEEP_ERR)d
+                    PyObject* new_array = PyArray_SimpleNew(1, (long int*)&zero,  NPY_FLOAT32);
+                    PyList_Append(py_errs, new_array);
+                #endif
                 continue;
+            }
 
             /* 1. Sampling the Intensity */
-            int sam_min = std::floor(VMIN1(p_id));
-            int sam_max = std::ceil(VMAX1(p_id));
-            int sample_size = sam_max-sam_min+1;
+            const int sam_min = std::floor(VMIN1(p_id));
+            const int sam_max = std::ceil(VMAX1(p_id));
+            const long int sample_size = sam_max-sam_min+1;
             assert(sample_size>=0);
 
             cur_samples.resize(sample_size+2*win_width);
-            err.resize(sample_size);
+
             for(int i=0; i<sample_size+2*win_width; i++)
                 cur_samples[i] = sample(&IMB1(0), width,
                                         PB2(0,p_id)+(sam_min+i-win_width)*DXY2(0,p_id),
@@ -409,6 +370,13 @@ def searchEPL(px, py, imr, imc, rGc, K, dmin=0, dmax=1e6, win_width=4, keepErr=F
                 ref_samples[pos] = sample(&IMA1(0),width,
                                         PX1(p_id)-(pos-win_width)*DXY_LOCAL2(0,p_id),
                                         PY1(p_id)-(pos-win_width)*DXY_LOCAL2(1,p_id));
+            #if %(KEEP_ERR)d
+                PyObject* new_array = PyArray_SimpleNew(1, (long int*)&sample_size,  NPY_FLOAT32);
+                PyList_Append(py_errs, new_array);
+                float *err = (float *)PyArray_DATA(new_array); // pointer to data.
+            #else
+                err.resize(sample_size);
+            #endif
 
             /* 2. go through all the points in cur */
             size_t argmin;
@@ -422,14 +390,15 @@ def searchEPL(px, py, imr, imc, rGc, K, dmin=0, dmax=1e6, win_width=4, keepErr=F
             BEST_LEFT1(p_id) = sam_min + left;
             BEST_RIGHT1(p_id) = sam_min + right;
         }
-        '''% {'win_width': win_width }
+        '''% {'win_width': win_width, 'KEEP_ERR': keepErr}
+    weave.inline(code, ['ima','imb','width','node_cnt','pb',
+                        'vmax','vmin','dxy','dxy_local','px','py',
+                        'best','valid_mask','best_err','best_left','best_right','errs'],#
+        support_code=scode, headers=['<algorithm>','<cmath>','<vector>','<map>','<csignal>','<set>'],
+        compiler='gcc', extra_compile_args=['-std=gnu++11 -msse2 -O3'])
 
-        weave.inline(code, ['ima','imb','width','node_cnt','pb',
-                            'vmax','vmin','dxy','dxy_local','px','py',
-                            'best','valid_mask','best_err','best_left','best_right'],#
-            support_code=scode, headers=['<algorithm>','<cmath>','<vector>','<map>','<csignal>','<set>'],
-            compiler='gcc', extra_compile_args=['-std=gnu++11 -msse2 -O3'])
-
+    searchEPL.ec = ec
+    searchEPL.vlist = errs
     searchEPL.rlist=(best_left, best_right)
     searchEPL.err = best_err
 #    valid_mask = conditions(valid_mask, best_err<0.0138) # 9*(10/255.0)**2
@@ -467,7 +436,7 @@ if __name__ == "__main__":
     cGr = [getG(f,f0) for f in fs]
 
     #f0.px,f0.py = np.atleast_1d(170,267)
-    d,vm,var = f0.searchEPL(fs[1], K, dmin=iD(5), dmax=iD(0.1), win_width=1, levels=5) #
+    d,vm,var = f0.searchEPL(fs[1], K, dmin=iD(5), dmax=iD(0.1), win_width=3, levels=5, keepErr=1) #
     plotxyzrgb(f0.makePC(1.0/d, conditions(vm, d>iD(5), d<iD(0.1))))
     dba = d.copy()
     ba(f0.px, f0.py, dba, vm, [frames[0],frames[1]], [cGr[0], cGr[1]], K)

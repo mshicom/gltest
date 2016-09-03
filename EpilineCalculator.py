@@ -262,7 +262,7 @@ class EpilineDrawer(object):
 
         def update(index):
             i2.set_data(frames[index])
-            a2.set_title('frame %s' % index)
+            a2.set_title('frame %d' % index)
 
             rGc = relG(wGc[0], wGc[index])
             ec = self.ecs[index]
@@ -279,7 +279,7 @@ class EpilineDrawer(object):
                 curv1.set_data(dom_, res_)
                 a3.set_xlim(dom_[0], dom_[-1])
             else:
-                print 'epiline not valid'
+                print 'frame %d epiline not valid' % index
                 line1.set_data([],[])
                 dots.set_data([],[])
                 curv1.set_data([],[])
