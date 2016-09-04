@@ -52,11 +52,12 @@ class Frame(object):
             self._pyr[layer] = cv2.pyrDown(self.pyr_im(layer-1))
         return self._pyr[layer]
 
-    def extractPts(self, K, gthreshold=None):
+    def extractPts(self, K, gthreshold=None, pyr_level=0):
         ''' 1.extract pixels with significant gradients'''
-        h,w = self.im.shape
+        im = self.pyr_im(pyr_level)
+        h,w = im.shape
 
-        grad,orin = scharr(self.im)
+        grad,orin = scharr(im)
 #            self.grad, self.orin = grad,orin
 #        dx,dy = np.gradient(self.im)
 #        grad = np.sqrt(dx**2 + dy**2)

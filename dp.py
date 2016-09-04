@@ -15,7 +15,7 @@ sys.path.append("/home/nubot/data/workspace/gltes")
 from tools import *
 from EpilineCalculator import EpilineDrawer,EpilineCalculator
 from test_orb import Frame,getG
-from vtk_visualizer import plotxyzrgb,plotxyz
+from vtk_visualizer import plotxyzrgb,plotxyz,get_vtk_control
 from scipy import weave
 
 import cv2
@@ -133,7 +133,6 @@ def interceptLine(xmin,xmax,ymin,ymax, x0, y0, dxy):
     vmin = np.maximum(v_xmin, v_ymin)
     valid_mask = conditions(v_xmin<v_ymax, v_xmax>v_ymin, vmax>0)
     return vmin, vmax, valid_mask
-
 #%%
 pyr_level = 0
 factor = 0.5**pyr_level
@@ -142,65 +141,76 @@ K = fac_mat.dot(K0)
 h,w = f0.pyr_im(pyr_level).shape
 
 f0.extractPts(K, pyr_level=pyr_level)
-
-pf()
-pis(f0.pyr_im(pyr_level))
-x,y = plt.ginput(0,-1)[0]
-
-
-
 f1 = fs[9]
-ec = EpilineCalculator(x, y, getG(f0,f1), K)
-dxy_l, dxy,pinf = ec.dxy_local, ec.dxy, ec.nPinf
 
-vri,vra, valid = interceptLine(1,w-1,1,h-1, x, y, dxy_l)
-assert(valid)
-ref = np.fliplr([np.arange(vri,vra+1,dtype='i')])[0]
-ref_p = (x+ref*dxy_l[0], y+ref*dxy_l[1])
-ref_sample = sample(f0.pyr_im(pyr_level), ref_p[0],ref_p[1])
-
-vci,vca, valid = interceptLine(1,w-1,1,h-1, pinf[0], pinf[1], dxy)
-assert(valid)
-cur = np.arange(vci, vca+1, dtype='i')
-cur_p = (pinf[0]+cur*dxy[0], pinf[1]+cur*dxy[1])
-cur_sample = sample(f1.pyr_im(pyr_level), cur_p[0], cur_p[1])
-
-
-match= fast_dp2(ref_sample, cur_sample, 0.0016)
 
 f = plt.figure()
 gs = plt.GridSpec(2,2)
 a1,a2 = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
 a3 = f.add_subplot(gs[1,:])
-#plt.tight_layout()
 
 a1.imshow(f0.pyr_im(pyr_level), interpolation='none', aspect=1)
 a1.set_title('pick a point in this image')
 a1.autoscale(False)
-a1.plot(x,y,'r.')
-a1.plot([x+vri*dxy_l[0],x+vra*dxy_l[0]],
-        [y+vri*dxy_l[1],y+vra*dxy_l[1]])
+a1.plot(f0.px,f0.py,'b.',ms=1)
 
 i2 = a2.imshow(f1.pyr_im(pyr_level), interpolation='none', aspect=1)
 a2.autoscale(False)
-a2.plot(pinf[0],pinf[1],'r.')
-a2.plot([pinf[0]+vci*dxy[0], pinf[0]+vca*dxy[0]],
-        [pinf[1]+vci*dxy[1], pinf[1]+vca*dxy[1]])
 
-mask = match!=-1
-a3.plot(cur[match[mask]], ref_sample[mask],'r')
-a3.plot(cur, cur_sample, 'b')
-d = ref[mask]+cur[match[mask]]
+#p = plt.ginput(0,-1)
+match_rec,ref_ps,cur_ps,refs,curs = {},{},{},{},{}
 
-a1.plot(f0.px,f0.py,'b.',ms=1)
+for i,(x,y) in enumerate(p):
+    x *= factor
+    y *= factor
+    ec = EpilineCalculator(x, y, getG(f0,f1), K)
+    dxy_l, dxy,pinf = ec.dxy_local, ec.dxy, ec.nPinf
 
+    vri,vra, valid = interceptLine(1,w-1,1,h-1, x, y, dxy_l)
+#    assert(valid)
+    ref = np.fliplr([np.arange(vri,vra+1,dtype='i')])[0]
+    ref_p = (x+ref*dxy_l[0], y+ref*dxy_l[1])
+    ref_sample = sample(f0.pyr_im(pyr_level), ref_p[0],ref_p[1])
+
+    vci,vca, valid = interceptLine(1,w-1,1,h-1, pinf[0], pinf[1], dxy)
+#    assert(valid)
+    cur = np.arange(vci, vca+1, dtype='i')
+    cur_p = (pinf[0]+cur*dxy[0], pinf[1]+cur*dxy[1])
+    cur_sample = sample(f1.pyr_im(pyr_level), cur_p[0], cur_p[1])
+
+
+    match = fast_dp2(ref_sample, cur_sample, 0.0016)
+
+
+    a1.plot(x,y,'r.')
+    a1.plot([x+vri*dxy_l[0],x+vra*dxy_l[0]],
+            [y+vri*dxy_l[1],y+vra*dxy_l[1]])
+
+    a2.plot(pinf[0],pinf[1],'r.')
+    a2.plot([pinf[0]+vci*dxy[0], pinf[0]+vca*dxy[0]],
+            [pinf[1]+vci*dxy[1], pinf[1]+vca*dxy[1]])
+
+    mask = match!=-1
+    a3.plot(cur[match[mask]], ref_sample[mask],'r')
+    a3.plot(cur, cur_sample, 'b')
+
+    match_rec[i] = match.copy()
+    ref_ps[i] = tuple(ref_p)
+    cur_ps[i] = tuple(cur_p)
+    refs[i], curs[i] = ref.copy(),cur.copy()
 #%%
-ed = EpilineCalculator(ref_p[0][mask], ref_p[1][mask], getG(f0,f1), K)
-z=sample(f0.Z, ref_p[0][mask],ref_p[1][mask])
-p0 = backproject(ref_p[0][mask],ref_p[1][mask],K)
-pz = p0*z
+vtk = get_vtk_control()
+vtk.RemoveAllActors()
+for i in range(len(p)):
+    ref,cur,ref_p, cur_p, match = refs[i], curs[i],ref_ps[i], cur_ps[i], match_rec[i]
+    mask = match!=-1
 
-ze = 1.0/ed.DfromV(ref[mask]+cur[match[mask]])
-pe = p0*ze
-plotxyz(pz.T)
-plotxyz(pe.T,hold=True)
+    ed = EpilineCalculator(ref_p[0][mask], ref_p[1][mask], getG(f0,f1), K)
+    z=sample(f0.Z, ref_p[0][mask],ref_p[1][mask])
+    p0 = backproject(ref_p[0][mask],ref_p[1][mask],K)
+    pz = p0*z
+
+    ze = 1.0/ed.DfromV(ref[mask]+cur[match[mask]])
+    pe = p0*ze
+    plotxyz(pz.T,hold=True)
+    plotxyz(pe.T,hold=True)
