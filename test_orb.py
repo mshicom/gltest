@@ -52,14 +52,14 @@ class Frame(object):
             self._pyr[layer] = cv2.pyrDown(self.pyr_im(layer-1))
         return self._pyr[layer]
 
-    def extractPts(self, K, gthreshold=0.025):
+    def extractPts(self, K, gthreshold=None):
         ''' 1.extract pixels with significant gradients'''
         h,w = self.im.shape
 
-#            grad,orin = scharr(self.im)
+        grad,orin = scharr(self.im)
 #            self.grad, self.orin = grad,orin
-        dx,dy = np.gradient(self.im)
-        grad = np.sqrt(dx**2 + dy**2)
+#        dx,dy = np.gradient(self.im)
+#        grad = np.sqrt(dx**2 + dy**2)
 #        self.grad, self.orin = grad, np.arctan2(dy,dx)
 
         if gthreshold is None:
@@ -73,7 +73,7 @@ class Frame(object):
         y,x = np.where(mask)
         self.py, self.px = y,x
         self.v = []
-        self.dx, self.dy = dx[y,x], dy[y,x]
+#        self.dx, self.dy = dx[y,x], dy[y,x]
         ''' 2. corresponding back-projected 3D point'''
         self.P = backproject(x, y, K)
 
@@ -86,6 +86,7 @@ class Frame(object):
             I = self.getIncidenceMat(False)
             D = (I.transpose().dot(I)).diagonal()
             self.trimPts(D!=0)
+        return gthreshold
 
 
     def trimPts(self, mask, d=None):
@@ -102,13 +103,18 @@ class Frame(object):
         phi = np.arctan2(np.sqrt(p[0]**2 + p[1]**2), p[2])
         return theta, phi
 
-    def ProjTo(self, f):
-        assert(self.Z is not None)
+    def projTo(self, f, K, d=None, mask=None):
         assert(isinstance(f, Frame))
-        G = np.dot(np.linalg.inv(f.wGc), self.wGc)
-        P0 = self.P*self.Z[self.py, self.px]
+        G = getG(f, self)
+        if d is None:
+            assert(self.Z is not None)
+            d = self.Z[self.py, self.px]
+        P0 = self.P*d
         P1 = K.dot(G[0:3,0:3].dot(P0)+G[0:3,3][:,np.newaxis])
-        return P1[:2]/P1[2]
+        if mask is None:
+            return P1[0]/P1[2], P1[1]/P1[2]
+        else:
+            return (P1[0]/P1[2])[mask], (P1[1]/P1[2])[mask]
 
     def makePC(self, depth, valid_mask):#
         vm_ind, = np.where(valid_mask)
@@ -266,7 +272,7 @@ def searchEPL(px, py, imr, imc, rGc, K, dmin=0, dmax=1e6, win_width=4, keepErr=F
     best_left = np.empty(node_cnt,'i')
     best_right = np.empty(node_cnt,'i')
 
-    ima,imb,width = imr, imc, imr.shape[1]
+    width = imr.shape[1]
 
     scode = r'''
         inline float sample(const float* const mat, const int width, const float x, const float y)
@@ -362,16 +368,16 @@ def searchEPL(px, py, imr, imc, rGc, K, dmin=0, dmax=1e6, win_width=4, keepErr=F
             cur_samples.resize(sample_size+2*win_width);
 
             for(int i=0; i<sample_size+2*win_width; i++)
-                cur_samples[i] = sample(&IMB1(0), width,
+                cur_samples[i] = sample(&IMC1(0), width,
                                         PB2(0,p_id)+(sam_min+i-win_width)*DXY2(0,p_id),
                                         PB2(1,p_id)+(sam_min+i-win_width)*DXY2(1,p_id));
 
             for(int pos=0; pos<win_size; pos++)
-                ref_samples[pos] = sample(&IMA1(0),width,
+                ref_samples[pos] = sample(&IMR1(0),width,
                                         PX1(p_id)-(pos-win_width)*DXY_LOCAL2(0,p_id),
                                         PY1(p_id)-(pos-win_width)*DXY_LOCAL2(1,p_id));
             #if %(KEEP_ERR)d
-                PyObject* new_array = PyArray_SimpleNew(1, (long int*)&sample_size,  NPY_FLOAT32);
+                PyObject* new_array = PyArray_SimpleNew(1, (long int*)&sample_size, NPY_FLOAT32);
                 PyList_Append(py_errs, new_array);
                 float *err = (float *)PyArray_DATA(new_array); // pointer to data.
             #else
@@ -391,11 +397,11 @@ def searchEPL(px, py, imr, imc, rGc, K, dmin=0, dmax=1e6, win_width=4, keepErr=F
             BEST_RIGHT1(p_id) = sam_min + right;
         }
         '''% {'win_width': win_width, 'KEEP_ERR': keepErr}
-    weave.inline(code, ['ima','imb','width','node_cnt','pb',
+    weave.inline(code, ['imr','imc','width','node_cnt','pb',
                         'vmax','vmin','dxy','dxy_local','px','py',
                         'best','valid_mask','best_err','best_left','best_right','errs'],#
-        support_code=scode, headers=['<algorithm>','<cmath>','<vector>','<map>','<csignal>','<set>'],
-        compiler='gcc', extra_compile_args=['-std=gnu++11 -msse2 -O3'])
+                support_code=scode, headers=['<algorithm>','<cmath>','<vector>','<map>','<csignal>','<set>'],
+                compiler='gcc', extra_compile_args=['-std=gnu++11 -msse2 -O3'])
 
     searchEPL.ec = ec
     searchEPL.vlist = errs
@@ -403,7 +409,7 @@ def searchEPL(px, py, imr, imc, rGc, K, dmin=0, dmax=1e6, win_width=4, keepErr=F
     searchEPL.err = best_err
 #    valid_mask = conditions(valid_mask, best_err<0.0138) # 9*(10/255.0)**2
     res = ec.DfromV(best).ravel()
-    return res, valid_mask, var**2
+    return res, valid_mask, best_err
 
 
 if __name__ == "__main__":
@@ -436,10 +442,10 @@ if __name__ == "__main__":
     cGr = [getG(f,f0) for f in fs]
 
     #f0.px,f0.py = np.atleast_1d(170,267)
-    d,vm,var = f0.searchEPL(fs[1], K, dmin=iD(5), dmax=iD(0.1), win_width=3, levels=5, keepErr=1) #
+    d,vm,var = f0.searchEPL(fs[2], K, dmin=iD(5), dmax=iD(0.1), win_width=3, levels=5, keepErr=0) #
     plotxyzrgb(f0.makePC(1.0/d, conditions(vm, d>iD(5), d<iD(0.1))))
     dba = d.copy()
-    ba(f0.px, f0.py, dba, vm, [frames[0],frames[1]], [cGr[0], cGr[1]], K)
+    ba(f0.px, f0.py, dba, vm, [frames[0],frames[6]], [cGr[0], cGr[6]], K)
     plotxyzrgb(f0.makePC(1.0/dba, conditions(vm, dba>iD(5), dba<iD(0.1))))
 
 
@@ -478,8 +484,8 @@ if __name__ == "__main__":
     mask = conditions(vm, ~np.isnan(i_valid), np.abs(i_valid-i0)<5.0/255)
 
     pis(sim(f0.im,fs[2].im))
-    plt.plot(f0.px, f0.py,'r.',ms=2)
-    plt.plot(p_valid[0]+w, p_valid[1],'b.',ms=2)
+    plt.plot(f0.px, f0.py,'r.',ms=1)
+    plt.plot(p_valid[0]+w, p_valid[1],'b.',ms=1)
     plotxyzrgb(f0.makePC(1.0/d, mask))
 
     d2,vm2,var2 = f0.searchEPL(fs[2], K, dmin=iD(5), dmax=iD(0.1), win_width=4) #

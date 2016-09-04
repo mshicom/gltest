@@ -51,12 +51,6 @@ def skew(e):
                      [ e[2],    0,-e[0]],
                      [-e[1], e[0],   0]])
 
-def calcF(rGc, K):
-    ''' xr'*F*xc = 0 '''
-    R,t = rGc[:3,:3],rGc[:3,3]
-    rFc = inv(K.T).dot(skew(t)).dot(R).dot(inv(K))
-    return rFc
-
 def relG(wG0, wG1):
     return np.dot(np.linalg.inv(wG0), wG1)
 
@@ -136,6 +130,8 @@ class EpilineCalculator(object):
                                                   (Pinf[1,ind]+d*Pe[1])/(Pinf[2,ind]+d*Pe[2]))
         self.XYfromV_local=lambda v,ind=slice(None): (Pr[0,ind]+v*dxy_local[0,ind], Pr[1,ind]+v*dxy_local[1,ind])
 
+        self.rFc = lambda : inv(K.T).dot(skew(Trc)).dot(Rrc).dot(inv(K))  # xr'*rFc*xc = 0 '''
+
         def Triangulate(xc, yc, ind=slice(None)):
             ''' pixel -> ray -> 2 angles -> rules of sine -> edge length -> depth'''
             Baseline = np.linalg.norm(Trc)      # Edge C
@@ -160,26 +156,26 @@ class EpilineCalculator(object):
                 c. if Pe[3]>0, v_max=dxy_norm/Pe[3] for λ=np.inf
                 d. if Pe[3]<0, Ref is behind Cur, λ<-Pinf[2]/Pe[2] to ensure the resulting 3D point
                     will be in front of the Cur camera,
-                e. total epiline length is no less than 4
+                e. total epiline length is no less than 1
             '''
-            # a. valid border is trimmed a little bit, i.e. 5 pixels, for
+            # a. valid border is trimmed a little bit, i.e. 4 pixels, for
             h,w = shape
-            tx = self.VfromX(vec(5, w-5))
+            tx = self.VfromX(vec(4, w-4))
             tx = np.where(dxy[0]>0, tx, np.roll(tx,1,axis=0))   # tx[0,1] := [v_xmin,v_xmax]
-            ty = self.VfromY(vec(5, h-5))
+            ty = self.VfromY(vec(4, h-4))
             ty = np.where(dxy[1]>0, ty, np.roll(ty,1,axis=0))   # ty[0,1] := [v_ymin,v_ymax]\
             v_xmin,v_xmax,v_ymin,v_ymax = tx[0],tx[1],ty[0],ty[1]
             vmax = np.minimum(v_xmax, v_ymax)
             vmin = np.maximum(v_xmin, v_ymin)
             valid_mask = conditions(v_xmin<v_ymax, v_xmax>v_ymin, vmax>0)
 
-            # c
+            # d
             if Pe[2]<0:
                 dmax = np.clip(dmax, dmin, (1e-3-Pinf[2])/Pe[2])
             # b
             vmin = np.maximum(vmin, self.VfromD(dmin))
             vmax = np.minimum(vmax, self.VfromD(dmax))
-            # d
+            # c
             if Pe[2]>0:
                 vmax = np.minimum(vmax, dxy_norm/Pe[2])
             d_min, d_max = self.DfromV(vmin), self.DfromV(vmax)
