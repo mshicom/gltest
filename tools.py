@@ -34,7 +34,7 @@ def loaddata2():
         K = data['K']
         r = data['r']
         frames = [frames[i] for i in range(frames.shape[0])]
-    return frames, G, K
+    return frames, G, K, None
 
 def loaddata3():
     with np.load("/mnt/workbench/orb_pos.npz") as data:
