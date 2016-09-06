@@ -137,10 +137,9 @@ def gen_prox_g(warp_d, d, epsilon, tau):
 # Minimization of F(K*x) + G(x)
 
 # Proximity operators F
-amp = lambda u: np.sqrt(np.sum(u ** 2, axis=0))
-normalize = lambda u: u / np.tile((np.maximum(amp(u), 1e-10))[np.newaxis, :, :], (2, 1, 1))
-def soft_thresholding(x, gamma):
-    return np.maximum(0, 1 - gamma / np.maximum(np.abs(x), 1E-10)) * x
+amp = lambda u: np.sqrt(np.sum(u ** 2, axis=0))     # gradient magnitude = sqrt(dx**2+dy**2)
+normalize = lambda u: u / np.tile((np.maximum(amp(u), 1e-10))[np.newaxis, :, :], (2, 1, 1)) # {dx,dy}/gradient magnitude
+soft_thresholding = lambda x, gamma: np.maximum(0, 1 - gamma / np.maximum(np.abs(x), 1E-10)) * x
 
 def dual_prox(prox):
     return lambda u, sigma: u - sigma * prox(u / sigma, 1 / sigma)
@@ -176,6 +175,8 @@ def solver(im0, im1, rGc, K, alpha, epsilon, d=None, p=None):
 
             p.flat += sigma * L.dot(d1.ravel())
             p = prox_fs(p, sigma)
+#            norm = np.maximum(1, amp(p))
+#            p /= norm[np.newaxis,:,:]                   # reprojection
 
             d.flat -= tau * L.T.dot(p.ravel())
             d = prox_g(d, tau)
@@ -191,7 +192,7 @@ def solver(im0, im1, rGc, K, alpha, epsilon, d=None, p=None):
 frames, wGc, K0, Z = loaddata1() #
 frames = [np.ascontiguousarray(f, 'f')/255 for f in frames]
 rGc = [relPos(wGc[0], g) for g in wGc]
-EpilineDrawer(frames[0:], wGc[0:], K0)
+#EpilineDrawer(frames[0:], wGc[0:], K0)
 pyr_ims = {0:frames}
 Ks  = {0:K0}
 scale_mat = np.diag([0.5, 0.5, 1])
@@ -200,6 +201,7 @@ for level in range(1,6):
     pyr_ims[level] = [cv2.pyrDown(im) for im in pyr_ims[level-1]]
     Ks[level] = scale_mat.dot(Ks[level-1])
 
+#%%
 alpha = 3
 cur_id = -1
 for level in reversed(range(6)):
@@ -221,3 +223,6 @@ for level in reversed(range(6)):
 #    plotxyz(p3d.T)
     p3dc = np.vstack([p3d, np.tile(im0.ravel()*255,(3,1))])
     plotxyzrgb(p3dc.T)
+
+
+

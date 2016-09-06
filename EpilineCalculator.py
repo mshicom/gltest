@@ -159,14 +159,15 @@ class EpilineCalculator(object):
         self.ZfromXY = Triangulate
 
         def getLimits(shape, dmin=0.0, dmax=1e6):
-            '''There are in total 5 constraints in the epiline parameters λ and v:
-                a. Valid image region: 0<x<w, 0<y<h;
-                b. Expected search range indicated by [dmin, dmax];
-                c. if Pe[3]>0, v_max=dxy_norm/Pe[3] for λ=np.inf
-                d. if Pe[3]<0, Ref is behind Cur, λ<-Pinf[2]/Pe[2] to ensure the resulting 3D point
-                    will be in front of the Cur camera,
-                e. total epiline length is no less than 1
-            '''
+            """
+            There are in total 5 constraints in the epiline parameters λ and v:
+            a. Valid image region: 0<x<w, 0<y<h;
+            b. Expected search range indicated by [dmin, dmax];
+            c. if Pe[3]>0, v_max=dxy_norm/Pe[3] for λ=np.inf
+            d. if Pe[3]<0, Ref is behind Cur, λ<-Pinf[2]/Pe[2] to ensure the resulting 3D point
+                will be in front of the Cur camera,
+            e. total epiline length is no less than 1
+            """
             # a. valid border is trimmed a little bit, i.e. 4 pixels, for
             h,w = shape
             tx = self.VfromX(vec(4, w-4))
