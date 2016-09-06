@@ -55,43 +55,52 @@ def relG(wG0, wG1):
     return np.dot(np.linalg.inv(wG0), wG1)
 
 class EpilineCalculator(object):
-    ''' 1. suppose (X, X') are the Ref and Cur image pixel pairs,
-        given the relative camera pos (R,T), X'=(R,T).dot(X), we have a ray X'∈R3:
-            X' = K*(R*inv(K)*X*z + T)
-               = K*R*inv(K)*X + 1/z*K*T
-               =    Pinf[1:3] +   λ*Pe[1:3]  (λ:=1/z)
-        The projected image point x'∈R2 of X' will be:
-            x' = (Pinf[1:2] + λ*Pe[1:2])/(Pinf[3]+ λ*Pe[3])     (eq.1)
-        but what we want is x' in this form:
-            x' =  Pinf[1:2]/Pinf[3] + λ*dxy[1:2]                (eq.2a)
-               =  Pinf[1:2]/Pinf[3] + v*normalize(dxy[1:2])     (eq.2b)
-        v is disparity in pixels along the epi-polar line.
-        Putting eq.1 & eq.2a together and solve for dxy:
-              dxy[1:2] = 1/(Pinf[3]+ λ*Pe[3]) * (-Pe[3]/Pinf[3]*Pinf[1:2] + Pe[1:2])   (eq.3)
-        so normalize(dxy) = normalize(-Pe[3]/Pinf[3]*Pinf[1:2] + Pe[1:2]),  if (Pinf[3]+ λ*Pe[3])>0,
-                          = -normalize(-Pe[3]/Pinf[3]*Pinf[1:2] + Pe[1:2]), otherwise.
-        2.We need to make sure (Pinf[3]+ λ*Pe[3])>0, which means the triangulated
-        3D point will be in front of the Cur camera, not behind it. Also λ is
-        non-negative, this leads to 2 cases:
-          a.If camera Ref is in front of Cur (i.e. Pe[3]>0), we have:
-                      λ > 0 > -Pinf[3]/Pe[3], so λ_max=inf
-            everything is fine;
-          b.Otherwise camera Ref is behind Cur (i.e. Pe[3]<0), then
-                      -Pinf[3]/Pe[3] > λ > 0, then λ_max=-Pinf[3]/Pe[3].
-            which limits the minimum depth Z ( or maximum inverse depth).
-        3. Also from eq.2 we have:
-                        v*normalize(dxy[1:2]) = λ*dxy[1:2]
-        if λ is given, then
-                        λ/(Pinf[3] + λ*Pe[3])*dxy_norm = v,          (eq.4)
-        equivalently, if v is given, then
-                        λ = a*Pinf[3]/(1- a*Pe[3]),  a:=v/dxy_norm   (eq.5)
-        with two special cases:
-            z_max=inf -> λ_min=0   -> v_min=0,
-            z_min=0   -> λ_max=inf -> v_max = dxy_norm/Pe[3] (i.e. 1-a*Pe[3]=0)
-        4. if x' is given, reorganize eq.1:
-            x'[1:2]*Pe[3]*λ - Pe[1:2]*λ = Pinf[1:2] - x'[1:2]*Pinf[3]
-            λ = (Pinf[1:2] - x'[1:2]*Pinf[3])/(x'[1:2]*Pe[3] - Pe[1:2])
-    '''
+    """
+    Examples
+    --------
+    >>> ec = EpilineCalculator(xr, yr, rGc, K)
+    >>> vmin, vmax, d_min, d_max, valid_mask = ec.getLimits(frames[index].shape)
+
+    Notes
+    -----
+    1. suppose (X, X') are the Ref and Cur image pixel pairs, given the relative
+    camera pos (R,T), X'=(R,T).dot(X), we have a ray X'∈R3:
+        X' = K*(R*inv(K)*X*z + T)
+           = K*R*inv(K)*X + 1/z*K*T
+           =    Pinf[1:3] +   λ*Pe[1:3]  (λ:=1/z)
+    The projected image point x'∈R2 of X' will be:
+        x' = (Pinf[1:2] + λ*Pe[1:2])/(Pinf[3]+ λ*Pe[3])     (eq.1)
+    but what we want is x' in this form:
+        x' =  Pinf[1:2]/Pinf[3] + λ*dxy[1:2]                (eq.2a)
+           =  Pinf[1:2]/Pinf[3] + v*normalize(dxy[1:2])     (eq.2b)
+    v is disparity in pixels along the epi-polar line.
+    Putting eq.1 & eq.2a together and solve for dxy:
+          dxy[1:2] = 1/(Pinf[3]+ λ*Pe[3]) * (-Pe[3]/Pinf[3]*Pinf[1:2] + Pe[1:2])   (eq.3)
+    so normalize(dxy) = normalize(-Pe[3]/Pinf[3]*Pinf[1:2] + Pe[1:2]),  if (Pinf[3]+ λ*Pe[3])>0,
+                      = -normalize(-Pe[3]/Pinf[3]*Pinf[1:2] + Pe[1:2]), otherwise.
+    2.We need to make sure (Pinf[3]+ λ*Pe[3])>0, which means the triangulated
+    3D point will be in front of the Cur camera, not behind it. Also λ is
+    non-negative, this leads to 2 cases:
+      a.If camera Ref is in front of Cur (i.e. Pe[3]>0), we have:
+                  λ > 0 > -Pinf[3]/Pe[3], so λ_max=inf
+      everything is fine;
+
+      b.Otherwise camera Ref is behind Cur (i.e. Pe[3]<0), then
+                  -Pinf[3]/Pe[3] > λ > 0, then λ_max=-Pinf[3]/Pe[3].
+      which limits the minimum depth Z ( or maximum inverse depth).
+    3. Also from eq.2 we have:
+                    v*normalize(dxy[1:2]) = λ*dxy[1:2]
+    if λ is given, then
+                    λ/(Pinf[3] + λ*Pe[3])*dxy_norm = v,          (eq.4)
+    equivalently, if v is given, then
+                    λ = a*Pinf[3]/(1- a*Pe[3]),  a:=v/dxy_norm   (eq.5)
+    with two special cases:
+        z_max=inf -> λ_min=0   -> v_min=0,
+        z_min=0   -> λ_max=inf -> v_max = dxy_norm/Pe[3] (i.e. 1-a*Pe[3]=0)
+    4. if x' is given, reorganize eq.1:
+        x'[1:2]*Pe[3]*λ - Pe[1:2]*λ = Pinf[1:2] - x'[1:2]*Pinf[3]
+        λ = (Pinf[1:2] - x'[1:2]*Pinf[3])/(x'[1:2]*Pe[3] - Pe[1:2])
+    """
     def __init__(self, xr, yr, rGc, K):
         # xr, yr, rGc, K = f0.px, f0.py, getG(f0,f1), K
         xr,yr = np.atleast_1d(xr,yr)

@@ -1,14 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""
-==============================================
-Total variation denoising using Chambolle Pock
-==============================================
-"""
-# Author: Samuel Vaiter <samuel.vaiter@ceremade.dauphine.fr>
 from __future__ import division
-
-print __doc__
 
 import numpy as np
 from scipy import ndimage
@@ -17,7 +9,7 @@ import matplotlib.pyplot as plt
 
 from tools import *
 
-from EpilineCalculator import EpilineCalculator
+from EpilineCalculator import EpilineCalculator,EpilineDrawer
 
 from vtk_visualizer import plotxyzrgb,plotxyz
 
@@ -94,7 +86,9 @@ def gen_warpf(Iref, I, cGr, K):
     shape = Iref.shape
     y, x = np.mgrid[0.:shape[0], 0.:shape[1]]
     ec = EpilineCalculator(x.ravel(), y.ravel(), cGr, K)
+    vmin, vmax, d_min, d_max, valid_mask = ec.getLimits(shape)
     Pinf, Pe = ec.Pinf, ec.Pe
+    mask_out = np.reshape(~valid_mask, shape)
 
     dx0 = Pe[0]*Pinf[2]-Pe[2]*Pinf[0]
     dy0 = Pe[1]*Pinf[2]-Pe[2]*Pinf[1]
@@ -113,11 +107,12 @@ def gen_warpf(Iref, I, cGr, K):
         err = Iw - Iref       # 'time' derivative'
 
         # calculate the derivative of pixel position(u,v) w.r.t depth(z)
-        # calculate the full derivative of error-function(r) w.r.t depth(z)
         gIwy,gIwx = np.gradient(Iw)  # ∇I|π○g(zX) = image gradient after transform
         Ig = gIwx.ravel()*dx0/denom**2 + gIwy.ravel()*dy0/denom**2
         Ig = Ig.reshape(shape)
 
+        err[mask_out] = 0
+        Ig[mask_out] = 0
         return err, Ig, Iw
     return warp_d
 
@@ -179,7 +174,7 @@ def solver(im0, im1, rGc, K, alpha, epsilon, d=None, p=None):
         for iterations in range(200):
             d_old = d.copy()
 
-            p.flat +=  sigma * L.dot(d1.ravel())
+            p.flat += sigma * L.dot(d1.ravel())
             p = prox_fs(p, sigma)
 
             d.flat -= tau * L.T.dot(p.ravel())
@@ -196,7 +191,7 @@ def solver(im0, im1, rGc, K, alpha, epsilon, d=None, p=None):
 frames, wGc, K0, Z = loaddata1() #
 frames = [np.ascontiguousarray(f, 'f')/255 for f in frames]
 rGc = [relPos(wGc[0], g) for g in wGc]
-
+EpilineDrawer(frames[0:], wGc[0:], K0)
 pyr_ims = {0:frames}
 Ks  = {0:K0}
 scale_mat = np.diag([0.5, 0.5, 1])
@@ -206,8 +201,9 @@ for level in range(1,6):
     Ks[level] = scale_mat.dot(Ks[level-1])
 
 alpha = 3
+cur_id = -1
 for level in reversed(range(6)):
-    im0,im1 = pyr_ims[level][0],pyr_ims[level][-1]
+    im0,im1 = pyr_ims[level][0],pyr_ims[level][cur_id]
     K = Ks[level]
     if level==5:
         d = np.full_like(im0, 0.01, 'f')
@@ -218,10 +214,10 @@ for level in reversed(range(6)):
         p = np.zeros((2,)+d.shape,'f')
         for i in range(2):
             p[i] = cv2.pyrUp(p_[i])
-    d,p = solver(im0, im1, rGc[-1], K, alpha*0.5**level, 1e-2, d, p)
+    d,p = solver(im0, im1, rGc[cur_id], K, alpha*0.5**level, 1e-2, d, p)
 
     y,x = np.mgrid[0.0:im0.shape[0], 0.0:im0.shape[1]]
     p3d = backproject(x.ravel(), y.ravel(), K)/d.ravel()
+#    plotxyz(p3d.T)
     p3dc = np.vstack([p3d, np.tile(im0.ravel()*255,(3,1))])
-    plotxyz(p3d.T)
-#    plt.waitforbuttonpress()
+    plotxyzrgb(p3dc.T)
