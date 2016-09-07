@@ -171,14 +171,23 @@ def gen_dt(f, q=None, Lambda=1.0):
         """ cost = (p-best)**2/(Lambda*2) + f[v_id[k]] """
         k = np.searchsorted(z, p)-1     # z:=[-inf, ... , +inf]
         q_id = v_id[k]
-        best = q[q_id]
+
         if interplate:
-            f1 = (p-q[q_id-1])**2/Lambda2 + f[q_id-1]
-            f2 = ( p-q[q_id] )**2/Lambda2 + f[q_id]
-            f3 = (p-q[q_id+1])**2/Lambda2 + f[q_id+1]
-            df = 0.5*(f3-f1)
-            ddf = (f3+f1)-2*f2
-            best = q[q_id] - df/ddf
+            x1,x2,x3 = q[q_id-1],q[q_id],q[q_id+1]
+            y1 = (p-x1)**2/Lambda2 + f[q_id-1]
+            y2 = (p-x2)**2/Lambda2 + f[q_id]
+            y3 = (p-x3)**2/Lambda2 + f[q_id+1]
+            denom = (x1 - x2) * (x1 - x3) * (x2 - x3);
+            A     = (x3 * (y2 - y1) + x2 * (y1 - y3) + x1 * (y3 - y2)) / denom;
+            B     = (x3*x3 * (y1 - y2) + x2*x2 * (y3 - y1) + x1*x1 * (y2 - y3)) / denom;
+            best = -B / (2*A)
+#            d1 = (y2-y1)/(x2-x1)
+#            d2 = (y3-y2)/(x3-x2)
+#            df = 0.5*(d1+d2)
+#            ddf = d2-d1
+#            best = x2 - df/ddf
+        else:
+            best = q[q_id]
         if debug:
             li.set_xdata(best)
             l.set_xdata(q[q_id])
@@ -212,7 +221,6 @@ def gen_proxg_dt(x, y, Iref, I, cGr, K, tau):
                 d_[i] = dts[i](d[i], interplate)
         return d_
     return prox_g, d0
-
 
 
 def dual_prox(prox):
@@ -261,7 +269,8 @@ cGr = cGrs[cur_id]
 x,y = np.atleast_1d(22,21)
 prox_g, d0 = gen_proxg_dt(x, y, im0, im1, cGr, K, tau)
 #EpilineDrawer([im0,im1],[wGc[0],wGc[-1]],K,(x,y))
-d = np.atleast_1d(0.75)
+d = np.atleast_1d(0.2)
+
 d = prox_g(d,1);print d
 
 

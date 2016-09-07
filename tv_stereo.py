@@ -196,14 +196,18 @@ def gen_dt(f, q=None, Lambda=1.0):
         """ cost = (p-best)**2/(Lambda*2) + f[v_id[k]] """
         k = np.searchsorted(z, p)-1     # z:=[-inf, ... , +inf]
         q_id = v_id[k]
-        best = q[q_id]
-        if interplate:
-            f1 = (p-q[q_id-1])**2/Lambda2 + f[q_id-1]
-            f2 = ( p-q[q_id] )**2/Lambda2 + f[q_id]
-            f3 = (p-q[q_id+1])**2/Lambda2 + f[q_id+1]
-            df = 0.5*(f3-f1)
-            ddf = (f3+f1)-2*f2
-            best = q[q_id] - df/ddf
+
+        if interplate and q_id<n-1 and q_id>0:
+            x1,x2,x3 = q[q_id-1],q[q_id],q[q_id+1]
+            y1 = (p-x1)**2/Lambda2 + f[q_id-1]
+            y2 = (p-x2)**2/Lambda2 + f[q_id]
+            y3 = (p-x3)**2/Lambda2 + f[q_id+1]
+            denom = (x1 - x2) * (x1 - x3) * (x2 - x3);
+            A     = (x3 * (y2 - y1) + x2 * (y1 - y3) + x1 * (y3 - y2)) / denom;
+            B     = (x3*x3 * (y1 - y2) + x2*x2 * (y3 - y1) + x1*x1 * (y2 - y3)) / denom;
+            best = -B / (2*A)
+        else:
+            best = q[q_id]
         if debug:
             li.set_xdata(best)
             l.set_xdata(q[q_id])
@@ -264,7 +268,7 @@ def solver(im0, im1, cGr, K, alpha, epsilon, d=None, p=None):
     for warps in range(20):
 #        prox_g = gen_prox_g(warp_d, d, epsilon, tau)
 
-        for iterations in range(200):
+        for iterations in range(20):
             d_old = d.copy()
 
             p.flat += sigma * L.dot(d1.ravel())
@@ -273,7 +277,7 @@ def solver(im0, im1, cGr, K, alpha, epsilon, d=None, p=None):
 #            p /= norm[np.newaxis,:,:]                   # reprojection
 
             d.flat -= tau * L.T.dot(p.ravel())
-            d.flat = prox_g(d.ravel())#, tau
+            d.flat = prox_g(d.ravel(), True)#, tau
 
             d = np.clip(d, iD(5.0), iD(0.1))        # make sure depth stays positive
             d1 = 2*d - d_old
@@ -298,7 +302,7 @@ for level in range(1,6):
 #%%
 alpha = 3
 cur_id = -1
-for level in reversed(range(6)):
+for level in reversed(range(4)):
     im0,im1 = pyr_ims[level][0],pyr_ims[level][cur_id]
     K = Ks[level]
     if level==5:
