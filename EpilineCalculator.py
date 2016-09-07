@@ -58,7 +58,7 @@ class EpilineCalculator(object):
     """
     Examples
     --------
-    >>> ec = EpilineCalculator(xr, yr, rGc, K)
+    >>> ec = EpilineCalculator(xr, yr, cGr, K)
     >>> vmin, vmax, d_min, d_max, valid_mask = ec.getLimits(frames[index].shape)
 
     Notes
@@ -101,12 +101,12 @@ class EpilineCalculator(object):
         x'[1:2]*Pe[3]*λ - Pe[1:2]*λ = Pinf[1:2] - x'[1:2]*Pinf[3]
         λ = (Pinf[1:2] - x'[1:2]*Pinf[3])/(x'[1:2]*Pe[3] - Pe[1:2])
     """
-    def __init__(self, xr, yr, rGc, K):
+    def __init__(self, xr, yr, cGr, K):
         # xr, yr, rGc, K = f0.px, f0.py, getG(f0,f1), K
         xr,yr = np.atleast_1d(xr,yr)
 
-        Rrc,Trc = rGc[:3,:3],rGc[:3,3]
-        Rcr,Tcr = Rrc.T, -Rrc.T.dot(Trc)
+        Rcr,Tcr = cGr[:3,:3], cGr[:3,3]
+        Rrc,Trc = Rcr.T, -Rcr.T.dot(Tcr)
 
         Pr = projective(xr, yr)                                 # 3xN
         Pe0 = vec(K.dot(Trc))                                   # 3x1
@@ -158,6 +158,7 @@ class EpilineCalculator(object):
             return Z
         self.ZfromXY = Triangulate
 
+        self.v_limits = []
         def getLimits(shape, dmin=0.0, dmax=1e6):
             """
             There are in total 5 constraints in the epiline parameters λ and v:
@@ -188,12 +189,19 @@ class EpilineCalculator(object):
             # c
             if Pe[2]>0:
                 vmax = np.minimum(vmax, dxy_norm/Pe[2])
+            vmin, vmax = np.ceil(vmin), np.floor(vmax)
             d_min, d_max = self.DfromV(vmin), self.DfromV(vmax)
             # e
             valid_mask = conditions(valid_mask, (vmax-vmin)>1)
-
-            return vmin,vmax, d_min, d_max, valid_mask
+            self.v_limits = (vmin.astype('i4'), vmax.astype('i4'))
+            return vmin.astype('i4'), vmax.astype('i4'), d_min, d_max, valid_mask
         self.getLimits = getLimits
+
+        def getDRange(pid):
+            if self.v_limits:
+                vmin,vmax = self.v_limits[0][pid], self.v_limits[1][pid]
+                return self.DfromV(vec(np.arange(vmin,vmax+1)), pid).ravel()
+        self.getDRange = getDRange
 
         def searchEPL(imr, imc, win_width=3, index=None, dmin=0.0, dmax=1e6):
             if index is None:
@@ -208,7 +216,7 @@ class EpilineCalculator(object):
                     res.append([])
                     dom.append([])
                     continue
-                sam_min,sam_max = np.floor(vmin[p_id]), np.ceil(vmax[p_id])
+                sam_min,sam_max = vmin[p_id], vmax[p_id]
                 sam_cnt = int(sam_max-sam_min+1)
                 dom.append(self.DfromV(np.arange(sam_min, sam_max+1), p_id))
                 err = np.empty(sam_cnt, 'f')
@@ -260,8 +268,8 @@ class EpilineDrawer(object):
         res,dom = {},{}
 
         for index in range(1, len(frames)):
-            rGc = relG(wGc[0], wGc[index])
-            ec = EpilineCalculator(xr, yr, rGc, K)
+            cGr = relG(wGc[index],wGc[0])
+            ec = EpilineCalculator(xr, yr, cGr, K)
             res[index], dom[index] = ec.searchEPL(frames[0].astype('f'), frames[index].astype('f'),3,0)
             self.ecs[index] = ec
         curv1, = a3.plot(res[1])
@@ -309,7 +317,7 @@ if __name__ == "__main__":
 
     def test_EpilineCalculator():
         try:
-            ec2 = EpilineCalculator(f0.px, f0.py, getG(f0,f1), K) #
+            ec2 = EpilineCalculator(f0.px, f0.py, getG(f1,f0), K) #
 
             tx,ty = trueProj(f0.px, f0.py, getG(f1,f0), Zr=f0.Z)
             td = 1.0/sample(f0.Z, f0.px, f0.py)

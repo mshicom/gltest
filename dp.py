@@ -163,7 +163,7 @@ match_rec,ref_ps,cur_ps,refs,curs = {},{},{},{},{}
 for i,(x,y) in enumerate(p):
     x *= factor
     y *= factor
-    ec = EpilineCalculator(x, y, getG(f0,f1), K)
+    ec = EpilineCalculator(x, y, getG(f1,f0), K)
     dxy_l, dxy,pinf = ec.dxy_local, ec.dxy, ec.nPinf
 
     vri,vra, valid = interceptLine(1,w-1,1,h-1, x, y, dxy_l)
@@ -205,7 +205,7 @@ for i in range(len(p)):
     ref,cur,ref_p, cur_p, match = refs[i], curs[i],ref_ps[i], cur_ps[i], match_rec[i]
     mask = match!=-1
 
-    ed = EpilineCalculator(ref_p[0][mask], ref_p[1][mask], getG(f0,f1), K)
+    ed = EpilineCalculator(ref_p[0][mask], ref_p[1][mask], getG(f1, f0), K)
     z=sample(f0.Z, ref_p[0][mask],ref_p[1][mask])
     p0 = backproject(ref_p[0][mask],ref_p[1][mask],K)
     pz = p0*z

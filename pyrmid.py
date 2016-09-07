@@ -23,7 +23,7 @@ x,y = 170,267
 
 frames, wGc, K = loaddata2()
 frames = [np.ascontiguousarray(f, 'f')/255 for f in frames]
-rGc = [relPos(wGc[0], g) for g in wGc]
+cGr = [relPos(g, wGc[0]) for g in wGc]
 
 '''re-order the sequence accroding to baseline length'''
 if 0:
@@ -54,7 +54,7 @@ def pyr_guided_search():
     level = 4
     cnt = 0
     for level in reversed(range(5)):
-        ec = EpilineCalculator(ps[level][0], ps[level][1], rGc[-1], Ks[level])
+        ec = EpilineCalculator(ps[level][0], ps[level][1], cGr[-1], Ks[level])
         res, dom = ec.searchEPL(ims[level][0], ims[level][-1], dmin=dmin, dmax=dmax)
         cnt += len(res)
         if len(res) == 0:

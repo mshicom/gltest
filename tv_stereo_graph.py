@@ -15,6 +15,7 @@ from vtk_visualizer import plotxyzrgb,plotxyz
 
 import cv2
 import scipy.sparse
+from scipy import weave
 
 def getIncidenceMat(px, py, shape, makelist=False):
     mask_im = np.full(shape, False,'bool')
@@ -59,6 +60,7 @@ def getIncidenceMat(px, py, shape, makelist=False):
         return incidence_matrix, nbr_list, nbr_cnt, enode_out
     else:
         return incidence_matrix
+
 
 
 def gen_warpf(x,y, Iref, I, cGr, K):
@@ -117,25 +119,116 @@ def gen_prox_g(warp_d, d, epsilon, tau):
         return d
     return prox_g
 
+def gen_dt(f, q=None, Lambda=1.0):
+    f = f.astype('f')
+    n = f.shape[0]
+
+    q = q.astype('f') if not q is None else np.arange(n, dtype='f')
+    v_id = np.empty(n+1,'i4')
+    z = np.full(n+1, np.inf, 'f')
+    Lambda2 = Lambda*2
+    scode = r'''
+        template <class T>
+            inline T square(const T &x) { return x*x; };
+
+        #define INF std::numeric_limits<float>::infinity()
+        void dt(const float *f, const float Lambda2, const float *q, const int n,
+                float *z, int *v_id)
+        {
+            int k = 0;
+            v_id[0] = 0;
+            z[0] = -INF;
+            z[1] = +INF;
+            for (int q_id = 1; q_id <= n-1; q_id++) {
+                float s = 0.5*((f[q_id]*Lambda2+square(q[q_id]))-(f[v_id[k]]*Lambda2+square(q[v_id[k]])))/(q[q_id]-q[v_id[k]]);
+                while (s <= z[k]) {
+                    k--;
+                    s = 0.5*((f[q_id]*Lambda2+square(q[q_id]))-(f[v_id[k]]*Lambda2+square(q[v_id[k]])))/(q[q_id]-q[v_id[k]]);
+                }
+                k++;
+                v_id[k] = q_id;
+                z[k] = s;
+                z[k+1] = +INF;
+            }
+        }'''
+    code = r'''
+      //std::raise(SIGINT);
+     dt(f,Lambda2,q,n,z,v_id);
+    '''
+    weave.inline(code,['f','n','q','Lambda2','z','v_id'],
+                 support_code=scode, headers=['<algorithm>','<cmath>','<vector>','<stdio.h>','<csignal>'],
+                 compiler='gcc', extra_compile_args=['-std=gnu++11 -msse2 -O3'])
+    debug = 0
+    if debug:
+        fig,a = plt.subplots(num="dt")
+        a.plot(q, f, 'b')
+        l = a.axvline(c='b')
+        li = a.axvline(c='r')
+        c, = a.plot(f,'r')
+        a.autoscale(False)
+
+    def dt(p, interplate=False):
+        """ cost = (p-best)**2/(Lambda*2) + f[v_id[k]] """
+        k = np.searchsorted(z, p)-1     # z:=[-inf, ... , +inf]
+        q_id = v_id[k]
+        best = q[q_id]
+        if interplate:
+            f1 = (p-q[q_id-1])**2/Lambda2 + f[q_id-1]
+            f2 = ( p-q[q_id] )**2/Lambda2 + f[q_id]
+            f3 = (p-q[q_id+1])**2/Lambda2 + f[q_id+1]
+            df = 0.5*(f3-f1)
+            ddf = (f3+f1)-2*f2
+            best = q[q_id] - df/ddf
+        if debug:
+            li.set_xdata(best)
+            l.set_xdata(q[q_id])
+            c.set_data(q, (p-q)**2/(Lambda*2)+f)
+        return best
+    return dt
+
+def test_dt():
+    a = np.array(range(5,0,-1)+range(6))*5
+    dt = gen_dt(a)
+    best_id = np.atleast_1d(2.0)
+    best_id = dt(np.atleast_1d(best_id), 1); print  best_id
+
+from test_orb import searchEPL
+def gen_proxg_dt(x, y, Iref, I, cGr, K, tau):
+    # x, y, Iref, I, cGr, K, tau = x, y, im0, im1, cGr, K, tau
+    d0, valid_mask, best_err = searchEPL(x, y, Iref, I, cGr, K, dmin=0, dmax=1e6, win_width=3, keepErr=True)
+    ec = searchEPL.ec
+    errs = searchEPL.vlist
+    dts = []
+    for i in xrange(len(x)):
+        if valid_mask[i]:
+            dts.append(gen_dt(errs[i], ec.getDRange(i), tau))
+        else:
+            dts.append([])
+
+    def prox_g(d, interplate=False):
+        d_ = d.copy()
+        for i in xrange(len(d)):
+            if valid_mask[i]:
+                d_[i] = dts[i](d[i], interplate)
+        return d_
+    return prox_g, d0
+
+
+
+def dual_prox(prox):
+    return lambda u, sigma: u - sigma * prox(u / sigma, 1 / sigma)
+
+soft_thresholding = lambda x, gamma: np.maximum(0, 1 - gamma / np.maximum(np.abs(x), 1E-10)) * x
 
 frames, wGc, K0, Z = loaddata1() #
 frames = [np.ascontiguousarray(f, 'f')/255 for f in frames]
-rGcs = [relPos(wGc[0], g) for g in wGc]
+cGrs = [relPos(g, wGc[0]) for g in wGc]
 #EpilineDrawer(frames[0:], wGc[0:], K0)
 dx,dy = np.gradient(frames[0])
 grad = np.sqrt(dx**2 + dy**2)
 y0,x0 = np.where(grad>np.percentile(grad, 80))
-#y0,x0 = np.mgrid[0:480, 0:640]
-#y0,x0 = y0.ravel(), x0.ravel()
 
-I, nbr_list, nbrs_cnt, enode_out = getIncidenceMat(x0,y0, frames[0].shape, True)
-L = I.transpose().dot(I)
-D = L.diagonal()
-A = scipy.sparse.diags(D) - L
-'''setup neighbor LUT'''
-import pandas as pd
-nbrs = pd.DataFrame(nbr_list, dtype=int).fillna(-1).values
-node_edge = np.abs(I).T
+
 
 pyr_ims = {0:frames}
 Ks  = {0:K0}
@@ -149,62 +242,86 @@ for level in range(1,6):
 
 #%%
 
-tau = 0.025
+tau = 0.5
 sigma = 0.5
 epsilon = 1e-2
 
 cur_id = -1
-level = 5
+level = 3
+
+
 alpha = 3*0.5**level
 im0,im1 = pyr_ims[level][0],pyr_ims[level][cur_id]
+h,w = im0.shape
+
 K = Ks[level]
-x,y = ps[level]
-rGc = rGcs[cur_id]
-def dual_prox(prox):
-    return lambda u, sigma: u - sigma * prox(u / sigma, 1 / sigma)
+#x,y = ps[level]
+cGr = cGrs[cur_id]
 
-soft_thresholding = lambda x, gamma: np.maximum(0, 1 - gamma / np.maximum(np.abs(x), 1E-10)) * x
+x,y = np.atleast_1d(22,21)
+prox_g, d0 = gen_proxg_dt(x, y, im0, im1, cGr, K, tau)
+#EpilineDrawer([im0,im1],[wGc[0],wGc[-1]],K,(x,y))
+d = np.atleast_1d(0.75)
+d = prox_g(d,1);print d
 
-amp = lambda eFlow: np.sqrt(node_edge.dot(eFlow**2))     # 1xN, norm(▽x) of each nodes
-normalize = lambda eFlow: eFlow / np.maximum(amp(eFlow)[enode_out], 1e-10) #1xM, scale each edge
-F   = lambda eFlow: alpha * np.sum(amp(eFlow))
 
-prox_f = lambda eFlow, tau: soft_thresholding(amp(eFlow), alpha * tau)[enode_out] * normalize(eFlow)
-prox_fs = dual_prox(prox_f)
-warp_d = gen_warpf(x,y, im0, im1, rGc, K)
-# Proximity operators G
-def huber(x, epsilon):
-    err_abs = np.abs(x)
-    result = np.where(err_abs>=epsilon, err_abs-0.5*epsilon, err_abs**2/(2*epsilon))
-    return result
-def G(d):
-    err, Ig, Iw = warp_d(d)
-    return np.sum(huber(err.ravel(), epsilon))
+#%%
+for level in reversed(range(6)):
 
-d = np.full_like(x, 0.3, 'f')  # 1xN, nodes
-p = I.dot(d)        # 1xM flows on edges = ▽x
-d1 = d.copy()
-for warps in range(200):
-    prox_g = gen_prox_g(warp_d, d, epsilon, tau)
+    alpha = 3*0.5**level
+    im0,im1 = pyr_ims[level][0],pyr_ims[level][cur_id]
+    h,w = im0.shape
+    y,x = np.mgrid[0:h, 0:w]
+    y,x = y.ravel(), x.ravel()
+    I, nbr_list, nbrs_cnt, enode_out = getIncidenceMat(x,y, frames[0].shape, True)
+    node_edge = np.abs(I).T
 
-    for iterations in range(20):
-        d_old = d.copy()
+    K = Ks[level]
+    #x,y = ps[level]
+    cGr = cGrs[cur_id]
 
-        p += sigma * I.dot(d1)
-        p = prox_fs(p, sigma)
-#        norm_n = np.sqrt(node_edge.dot(p**2))
-#        p /= np.maximum(norm_n[enode_out], 1) # reprojection
 
-        d -= tau * I.T.dot(p)
-        d = prox_g(d, tau)
+    amp = lambda eFlow: np.sqrt(node_edge.dot(eFlow**2))     # 1xN, norm(▽x) of each nodes
+    normalize = lambda eFlow: eFlow / np.maximum(amp(eFlow)[enode_out], 1e-10) #1xM, scale each edge
+    F   = lambda eFlow: alpha * np.sum(amp(eFlow))
 
-        d = np.clip(d, iD(5.0), iD(0.1))        # make sure depth stays positive
-        d1 = 2*d - d_old
-#    pim.set_data(d)
-#
-#        print F(I.dot(d)),G(d)
-    p3d = backproject(x.ravel(), y.ravel(), K)/d.ravel()
-#    p3dc = np.vstack([p3d, np.tile(frames[0].ravel()*255,(3,1))])
+    prox_f = lambda eFlow, tau: soft_thresholding(amp(eFlow), alpha * tau)[enode_out] * normalize(eFlow)
+    prox_fs = dual_prox(prox_f)
+    warp_d = gen_warpf(x,y, im0, im1, cGr, K)
+    # Proximity operators G
+    def huber(x, epsilon):
+        err_abs = np.abs(x)
+        result = np.where(err_abs>=epsilon, err_abs-0.5*epsilon, err_abs**2/(2*epsilon))
+        return result
+    def G(d):
+        err, Ig, Iw = warp_d(d)
+        return np.sum(huber(err.ravel(), epsilon))
 
-    plotxyz(p3d.T)
-    plt.pause(0.0001)
+    d = np.full_like(x, 0.3, 'f')  # 1xN, nodes
+    p = I.dot(d)        # 1xM flows on edges = ▽x
+    d1 = d.copy()
+    prox_g, d0 = gen_proxg_dt(x, y, im0, im1, cGr, K, tau)
+
+    for warps in range(200):
+#        prox_g = gen_prox_g(warp_d, d, epsilon, tau)
+
+        for iterations in range(20):
+            d_old = d.copy()
+
+            p += sigma * I.dot(d1)
+            p = prox_fs(p, sigma)
+    #        norm_n = np.sqrt(node_edge.dot(p**2))
+    #        p /= np.maximum(norm_n[enode_out], 1) # reprojection
+            d -= tau * I.T.dot(p)
+            d = prox_g(d)
+
+            d = np.clip(d, iD(5.0), iD(0.1))        # make sure depth stays positive
+            d1 = 2*d - d_old
+    #    pim.set_data(d)
+    #
+    #        print F(I.dot(d)),G(d)
+        p3d = backproject(x.ravel(), y.ravel(), K)/d.ravel()
+    #    p3dc = np.vstack([p3d, np.tile(frames[0].ravel()*255,(3,1))])
+
+        plotxyz(p3d.T)
+        plt.pause(0.0001)

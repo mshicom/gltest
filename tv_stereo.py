@@ -3,7 +3,7 @@
 from __future__ import division
 
 import numpy as np
-from scipy import ndimage
+from scipy import ndimage,weave
 import scipy.sparse
 import matplotlib.pyplot as plt
 
@@ -144,15 +144,109 @@ soft_thresholding = lambda x, gamma: np.maximum(0, 1 - gamma / np.maximum(np.abs
 def dual_prox(prox):
     return lambda u, sigma: u - sigma * prox(u / sigma, 1 / sigma)
 
-def solver(im0, im1, rGc, K, alpha, epsilon, d=None, p=None):
-    tau = 0.025
+def gen_dt(f, q=None, Lambda=1.0):
+    f = f.astype('f')
+    n = f.shape[0]
+
+    q = q.astype('f') if not q is None else np.arange(n, dtype='f')
+    v_id = np.empty(n+1,'i4')
+    z = np.full(n+1, np.inf, 'f')
+    Lambda2 = Lambda*2
+    scode = r'''
+        template <class T>
+            inline T square(const T &x) { return x*x; };
+
+        #define INF std::numeric_limits<float>::infinity()
+        void dt(const float *f, const float Lambda2, const float *q, const int n,
+                float *z, int *v_id)
+        {
+            int k = 0;
+            v_id[0] = 0;
+            z[0] = -INF;
+            z[1] = +INF;
+            for (int q_id = 1; q_id <= n-1; q_id++) {
+                float s = 0.5*((f[q_id]*Lambda2+square(q[q_id]))-(f[v_id[k]]*Lambda2+square(q[v_id[k]])))/(q[q_id]-q[v_id[k]]);
+                while (s <= z[k]) {
+                    k--;
+                    s = 0.5*((f[q_id]*Lambda2+square(q[q_id]))-(f[v_id[k]]*Lambda2+square(q[v_id[k]])))/(q[q_id]-q[v_id[k]]);
+                }
+                k++;
+                v_id[k] = q_id;
+                z[k] = s;
+                z[k+1] = +INF;
+            }
+        }'''
+    code = r'''
+      //std::raise(SIGINT);
+     dt(f,Lambda2,q,n,z,v_id);
+    '''
+    weave.inline(code,['f','n','q','Lambda2','z','v_id'],
+                 support_code=scode, headers=['<algorithm>','<cmath>','<vector>','<stdio.h>','<csignal>'],
+                 compiler='gcc', extra_compile_args=['-std=gnu++11 -msse2 -O3'])
+    debug = 0
+    if debug:
+        fig,a = plt.subplots(num="dt")
+        a.plot(q, f, 'b')
+        l = a.axvline(c='b')
+        li = a.axvline(c='r')
+        c, = a.plot(f,'r')
+        a.autoscale(False)
+
+    def dt(p, interplate=False):
+        """ cost = (p-best)**2/(Lambda*2) + f[v_id[k]] """
+        k = np.searchsorted(z, p)-1     # z:=[-inf, ... , +inf]
+        q_id = v_id[k]
+        best = q[q_id]
+        if interplate:
+            f1 = (p-q[q_id-1])**2/Lambda2 + f[q_id-1]
+            f2 = ( p-q[q_id] )**2/Lambda2 + f[q_id]
+            f3 = (p-q[q_id+1])**2/Lambda2 + f[q_id+1]
+            df = 0.5*(f3-f1)
+            ddf = (f3+f1)-2*f2
+            best = q[q_id] - df/ddf
+        if debug:
+            li.set_xdata(best)
+            l.set_xdata(q[q_id])
+            c.set_data(q, (p-q)**2/(Lambda*2)+f)
+        return best
+    return dt
+
+from test_orb import searchEPL
+def gen_proxg_dt(x, y, Iref, I, cGr, K, tau):
+    # x, y, Iref, I, cGr, K, tau = x, y, im0, im1, cGr, K, tau
+    d0, valid_mask, best_err = searchEPL(x, y, Iref, I, cGr, K, dmin=0, dmax=1e6, win_width=3, keepErr=True)
+    ec = searchEPL.ec
+    errs = searchEPL.vlist
+    dts = []
+    for i in xrange(len(x)):
+        if valid_mask[i]:
+            dts.append(gen_dt(errs[i], ec.getDRange(i), tau))
+        else:
+            dts.append([])
+
+    def prox_g(d, interplate=False):
+        d_ = d.copy()
+        for i in xrange(len(d)):
+            if valid_mask[i]:
+                d_[i] = dts[i](d[i], interplate)
+        return d_
+    return prox_g, d0
+
+def solver(im0, im1, cGr, K, alpha, epsilon, d=None, p=None):
+    tau = 0.25
     sigma = 0.5
 
     F   = lambda u: alpha * np.sum(amp(u))
     prox_f = lambda u, tau: np.tile(soft_thresholding(amp(u), alpha * tau)[np.newaxis, :, :], (2, 1, 1)) * normalize(u)
     prox_fs = dual_prox(prox_f)
 
-    warp_d = gen_warpf(im0, im1, rGc, K)
+#    warp_d = gen_warpf(im0, im1, rGc, K)
+    h,w = im0.shape
+    y,x = np.mgrid[0:h,0:w]
+    y,x = y.ravel(),x.ravel()
+    prox_g, d = gen_proxg_dt(x, y, im0, im1, cGr, K, tau)
+    d = d.reshape(im0.shape)
+
     L,_,_ = MakeLinearOperator(im0.shape)
     def G(d):
         err, Ig, Iw = warp_d(d)
@@ -168,7 +262,7 @@ def solver(im0, im1, rGc, K, alpha, epsilon, d=None, p=None):
 
     pim = pis(im0,cmap='jet')
     for warps in range(20):
-        prox_g = gen_prox_g(warp_d, d, epsilon, tau)
+#        prox_g = gen_prox_g(warp_d, d, epsilon, tau)
 
         for iterations in range(200):
             d_old = d.copy()
@@ -179,7 +273,7 @@ def solver(im0, im1, rGc, K, alpha, epsilon, d=None, p=None):
 #            p /= norm[np.newaxis,:,:]                   # reprojection
 
             d.flat -= tau * L.T.dot(p.ravel())
-            d = prox_g(d, tau)
+            d.flat = prox_g(d.ravel())#, tau
 
             d = np.clip(d, iD(5.0), iD(0.1))        # make sure depth stays positive
             d1 = 2*d - d_old
@@ -191,7 +285,7 @@ def solver(im0, im1, rGc, K, alpha, epsilon, d=None, p=None):
 
 frames, wGc, K0, Z = loaddata1() #
 frames = [np.ascontiguousarray(f, 'f')/255 for f in frames]
-rGc = [relPos(wGc[0], g) for g in wGc]
+cGr = [relPos(g, wGc[0]) for g in wGc]
 #EpilineDrawer(frames[0:], wGc[0:], K0)
 pyr_ims = {0:frames}
 Ks  = {0:K0}
@@ -216,7 +310,7 @@ for level in reversed(range(6)):
         p = np.zeros((2,)+d.shape,'f')
         for i in range(2):
             p[i] = cv2.pyrUp(p_[i])
-    d,p = solver(im0, im1, rGc[cur_id], K, alpha*0.5**level, 1e-2, d, p)
+    d,p = solver(im0, im1, cGr[cur_id], K, alpha*0.5**level, 1e-2, d, p)
 
     y,x = np.mgrid[0.0:im0.shape[0], 0.0:im0.shape[1]]
     p3d = backproject(x.ravel(), y.ravel(), K)/d.ravel()
