@@ -238,9 +238,9 @@ class EpilineCalculator(object):
 class EpilineDrawer(object):
     def __init__(self, frames, wGc, K, p0=None):
 
-        self.ind = 0
+        self.ind = 1
         self.ecs = {}
-        slices= len(frames)-2
+        slices= len(frames)-1
 
         f = plt.figure()
         gs = plt.GridSpec(2,2)
@@ -249,7 +249,7 @@ class EpilineDrawer(object):
         #plt.tight_layout()
 
         a1.imshow(frames[0], interpolation='none', aspect=1)
-        a1.set_title('pick a point in this image')
+        a1.set_title('pick a point in this nPinfimage')
         a1.autoscale(False)
 
         i2 = a2.imshow(frames[1], interpolation='none', aspect=1)
@@ -262,8 +262,10 @@ class EpilineDrawer(object):
         a1.plot(xr, yr,'r.')
         a1.set_title(' ')
 
-        line1, = a2.plot([],'r-')
-        dots, = a2.plot([],'b.',ms=5)
+        line1, = a2.plot([],'r-')        # cost function curve
+        ticks, = a2.plot([],'b.',ms=5)   # fixed depth ticks
+        Ddot, = a2.plot([],'r.',ms=5)    # moving depth tick
+        lineD = a3.axvline()             # vline for moving depth tick
         Z = np.array([1e-2, 1e-1, 1e0, 1e1, 1e2])
         res,dom = {},{}
 
@@ -274,7 +276,9 @@ class EpilineDrawer(object):
             self.ecs[index] = ec
         curv1, = a3.plot(res[1])
 
-        def update(index):
+        self.pmouse = np.zeros(2)
+        def update():
+            index = self.ind
             i2.set_data(frames[index])
             a2.set_title('frame %d' % index)
 
@@ -289,27 +293,50 @@ class EpilineDrawer(object):
                 cGr = inv(rGc)
                 pcur = K.dot(transform(cGr, backproject(xr, yr, K)*Z))
                 pcur /= pcur[2]
-                dots.set_data(pcur[0],pcur[1])
+                ticks.set_data(pcur[0],pcur[1])
                 curv1.set_data(dom_, res_)
                 a3.set_xlim(dom_[0], dom_[-1])
             else:
                 print 'frame %d epiline not valid' % index
                 line1.set_data([],[])
-                dots.set_data([],[])
+                ticks.set_data([],[])
+                Ddot.set_data([],[])
                 curv1.set_data([],[])
+            f.canvas.draw()
 
+        def updateDot():
+            ec = self.ecs[self.ind]
+
+            pbase = ec.nPinf.ravel()
+
+            v1 = self.pmouse - pbase
+            v0 = ec.dxy.ravel()
+            v = np.maximum(0, v0.dot(v1))
+            pset =  pbase + v*v0
+
+            Ddot.set_data(pset[0], pset[1])
+
+            d = ec.DfromV(v)
+            lineD.set_xdata(d)
             f.canvas.draw()
 
         def onscroll(event):
             if event.button == 'down':
-                self.ind = np.clip(self.ind + 1, 0, slices)
+                self.ind = np.clip(self.ind + 1, 1, slices)
             else:
-                self.ind = np.clip(self.ind - 1, 0, slices)
-            update(self.ind+1)
+                self.ind = np.clip(self.ind - 1, 1, slices)
+            update()
+            updateDot()
 
-        update(self.ind+1)
+        def onmotion(event):
+            if event.inaxes == a2:
+                self.pmouse = np.array([event.xdata, event.ydata])
+                updateDot()
+
+
+        update()
         f.canvas.mpl_connect('scroll_event', onscroll)
-
+        f.canvas.mpl_connect('motion_notify_event', onmotion)
 
 if __name__ == "__main__":
     frames, wGc, K, _ = loaddata1()
