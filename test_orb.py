@@ -242,6 +242,34 @@ class Frame(object):
 #                print searchEPL.vlist
         return d,vm,var
 
+    @timing
+    def searchEPLs(self, fs, K, dmin=0.0, dmax=1e6, win_width=4):
+        if self.px is None:
+            self.extractPts(K)
+        p_cnt = len(self.px)
+
+        dmin = np.full(p_cnt, dmin,'f') if np.isscalar(dmin) else dmin
+        dmax = np.full(p_cnt, dmax,'f') if np.isscalar(dmax) else dmax
+        d_min, d_max = dmin.copy(), dmax.copy()
+
+        cGrs = [getG(f, self) for f in fs]
+        bl = np.array([np.linalg.norm(G[:3,3]) for G in cGrs])
+        odr = np.argsort(bl)
+        res = []
+        for i in odr:
+            d,vm,err = searchEPL(self.px, self.py,
+                                 self.pyr_im(0), fs[i].pyr_im(0),
+                                 cGrs[i], K,
+                                 d_min, d_max, win_width)
+
+            r_list, ec = searchEPL.rlist, searchEPL.ec
+            p_id, = np.where(vm)
+            d_min[p_id] = np.maximum(ec.DfromV(r_list[0][p_id], p_id), dmin[p_id])
+            d_max[p_id] = np.minimum(ec.DfromV(r_list[1][p_id], p_id), dmax[p_id])
+            res += (d.copy(),vm.copy(),var.copy())
+
+        return d,vm,var,res
+
 def getG(f0,f1):
     '''return 1G0, which p1 = 1G0 * p0  '''
     return np.dot(inv(f0.wGc), f1.wGc)
@@ -416,7 +444,7 @@ def searchEPL(px, py, imr, imc, cGr, K, dmin=0, dmax=1e6, win_width=4, keepErr=F
 
 if __name__ == "__main__":
 #    frames, wGc, K, Zs = loaddata1()
-    frames, wGc, K = loaddata2()
+    frames, wGc, K, Zs = loaddata2()
 #    from orb_kfs import loaddata4
 #    frames, wGc, K = loaddata4(20)
 #    EpilineDrawer(frames[0:], wGc[0:], K)
