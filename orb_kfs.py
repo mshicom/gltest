@@ -44,21 +44,23 @@ def wirteOpencvYAMLFile(fileName, array_dict):
 
 
 
-
-
-
 def loadImageFromBag():
     import rosbag
     images = {}
-    with rosbag.Bag('/home/nubot/data/bumblebee_11170132.bag') as bag:
-        for topic, msg, t in bag.read_messages('/stereo/11170132/left'):
-            frame = np.fromstring(msg.data, np.uint8)
-            frame.shape = (msg.height, msg.width)
-            ts = msg.header.stamp.to_time()
-            images[ts] = frame.copy()
+    try:
+        bag = rosbag.Bag('/home/nubot/data/bumblebee_11170132.bag')
+    except:
+        bag = rosbag.Bag('/home/kaihong/dataset/bumblebee_11170132.bag')
+
+    for topic, msg, t in bag.read_messages('/stereo/11170132/left'):
+        frame = np.fromstring(msg.data, np.uint8)
+        frame.shape = (msg.height, msg.width)
+        ts = msg.header.stamp.to_time()
+        images[ts] = frame.copy()
     K = np.array([[435.016, 0, 511.913],
                   [0, 435.016, 418.063],
                   [0,       0,      1]])
+    bag.close()
     return images, K
 
 def dataFromOrb():

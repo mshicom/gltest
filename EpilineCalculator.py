@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 
 import scipy
 
-from tools import loaddata1
+from tools import loaddata3
 def sample(dIc,x,y):
     x,y = np.atleast_1d(x, y)
     return scipy.ndimage.map_coordinates(dIc, (y,x), order=1, cval=np.nan)
@@ -224,8 +224,8 @@ class EpilineCalculator(object):
 
                 ref_pos = vec(xr[p_id], yr[p_id]) - vec(dxy_local[:,p_id])*offset
                 cur_pos = vec(nPinf[:,p_id]) + vec(dxy[:,p_id])*np.arange(np.floor(vmin[p_id])-win_width, np.ceil(vmax[p_id])+win_width+1)
-                ref = sample(imr, ref_pos[0], ref_pos[1])
-                cur = sample(imc, cur_pos[0], cur_pos[1])
+                ref = sample(imr.astype('f'), ref_pos[0], ref_pos[1])
+                cur = sample(imc.astype('f'), cur_pos[0], cur_pos[1])
                 for i in xrange(sam_cnt):
                     diff = ref - cur[i:i+2*win_width+1]
                     err[i] = np.sum(diff**2)
@@ -309,9 +309,10 @@ class EpilineDrawer(object):
         self.v = 0
         def updateFloatingTick():
             ec = self.ecs[self.ind]
-            v0, pbase = ec.dxy.ravel(), ec.nPinf.ravel()
+            vec0, pbase = ec.dxy.ravel(), ec.nPinf.ravel()
+            self.v = ec.VfromD(self.d)
 
-            pset =  pbase + self.v*v0
+            pset =  pbase + self.v*vec0
             Ddot.set_data(pset[0], pset[1])
             lineD.set_xdata(self.d)
             a3.set_title('depth: %f' % (1/self.d))
@@ -326,13 +327,13 @@ class EpilineDrawer(object):
             updateFloatingTick()
 
         def onmotion(event):
-            if event.inaxes == a2:
+            if event.inaxes == a2 and 0:
                 pmouse = np.array([event.xdata, event.ydata])
                 ec = self.ecs[self.ind]
-                v0, pbase = ec.dxy.ravel(), ec.nPinf.ravel()
+                vec0, pbase = ec.dxy.ravel(), ec.nPinf.ravel()
 
-                v1 = pmouse - pbase
-                self.v = np.maximum(0, v0.dot(v1))
+                vec1 = pmouse - pbase
+                self.v = np.maximum(0, vec0.dot(vec1))
                 self.d = ec.DfromV(self.v)
                 updateFloatingTick()
 
@@ -346,9 +347,143 @@ class EpilineDrawer(object):
         f.canvas.mpl_connect('scroll_event', onscroll)
         f.canvas.mpl_connect('motion_notify_event', onmotion)
 
+def InterceptBox(shape, p0,  dxy):
+    h,w = shape[:2]
+    dx,dy = dxy[:2]
+    x0,y0 = p0[:2]
+
+    tx = np.r_[0-x0, w-x0]/dx
+    tx = np.where(dx>0, tx, np.roll(tx,1,axis=0))   # tx[0,1] := [v_xmin,v_xmax]
+    ty = np.r_[0-y0, h-y0]/dy
+    ty = np.where(dy>0, ty, np.roll(ty,1,axis=0))   # ty[0,1] := [v_ymin,v_ymax]\
+    v_xmin,v_xmax,v_ymin,v_ymax = tx[0],tx[1],ty[0],ty[1]
+    vmax = np.minimum(v_xmax, v_ymax)
+    vmin = np.maximum(v_xmin, v_ymin)
+    valid_mask = conditions(v_xmin<v_ymax, v_xmax>v_ymin, vmax>0)
+    return vmin, vmax, valid_mask
+
+def sampleEpl(xr,yr, imr, imc, cGr, K):
+    e = EpilineCalculator(xr,yr, cGr, K)
+
+    vmin, vmax, valid_mask = InterceptBox(imr.shape, vec(xr,yr), -e.dxy_local)
+    pref = -np.arange(np.ceil(vmin+1),np.floor(vmax))*e.dxy_local + vec(xr,yr)
+    ref = sample(imr, pref[0], pref[1])
+
+    vmin, vmax, valid_mask = InterceptBox(imr.shape, e.nPinf, e.dxy )
+    pcur = np.arange(np.ceil(vmin+1),np.floor(vmax))*e.dxy + e.nPinf
+    cur = sample(imc, pcur[0], pcur[1])
+    return ref, cur
+
 if __name__ == "__main__":
-    frames, wGc, K, _ = loaddata1()
-    e=EpilineDrawer(frames, wGc, K)
+#    frames, wGc, K, _ = loaddata1()
+    from orb_kfs import loaddata4
+    frames, wGc, K = loaddata4(10)
+
+    xr,yr = 718.0, 451.0
+    e=EpilineDrawer(frames, wGc, K, (xr,yr))
+
+    #%%
+    ref, cur = sampleEpl(xr, yr, frames[0], frames[-1], relG(wGc[-1], wGc[0]), K)
+    pf()
+    plt.plot(ref,'r',
+             cur,'b')
+
+    from scipy import weave
+    def dp(ref, cur, occ_cost):
+        result = np.full_like(ref, -1,'i2')
+        code = r"""
+            size_t M = Nref[0];
+
+            size_t N = Ncur[0];
+            size_t N1 = N+1;
+            auto start = std::chrono::system_clock::now();
+
+            auto Costs = new float[(M+1)*(N+1)];
+            auto Bests = new unsigned char[(M+1)*(N+1)];
+
+            #define C(y,x)  Costs[(y)*N1+(x)]
+            #define B(y,x)  Bests[(y)*N1+(x)]
+
+            for (size_t m=0; m<=M; m++)
+                C(m, 0) = m*occ_cost;
+            for (size_t n=1; n<=N; n++)
+                C(0, n) = n*occ_cost;
+
+            for (size_t m=1,md=0; m<=M; m++,md++)
+                for(size_t n=1,nd=0; n<=N; n++,nd++ )
+                {
+
+                    float Edata = std::fabs((float)REF1(md) - (float)CUR1(nd));
+                    float c1 = C(m-1, n-1) + Edata;
+
+
+                    float c2 = C(m-1, n) + occ_cost;
+                    float c3 = C(m, n-1) + occ_cost;
+
+                    float c_min = c1;
+                    unsigned char  c_min_id = 0;
+
+                    if(c2<c_min) { c_min=c2; c_min_id=1; }
+                    if(c3<c_min) { c_min=c3; c_min_id=2; }
+
+                    C(m, n) = c_min;
+                    B(m, n) = c_min_id;
+                }
+
+            int l=M, r=N;
+            while (l!=0 && r!=0)
+                switch(B(l,r)) {
+                    case 0:
+                        RESULT1(l-1) = r-1;
+                        l -= 1; r -= 1;
+                        break;
+                    case 1:
+                        l -= 1; break;
+                    case 2:
+                        r -= 1; break;
+                    default:
+                        std::cerr << "unknown value of x";
+                        goto exit_loop;
+                }
+            exit_loop: ;
+
+            delete[] Costs;
+            delete[] Bests;
+            #undef C(y,x)
+            #undef B(y,x)
+
+            //auto duration = std::chrono::duration<double>
+            //    (std::chrono::system_clock::now() - start);
+            //std::cout <<"runtime:" <<duration.count() << "s" <<std::endl;
+        """
+        weave.inline(code,
+                   ['ref', 'cur', 'occ_cost','result'],
+                    compiler='gcc',headers=['<chrono>','<cmath>'],
+                    extra_compile_args=['-std=gnu++11 -msse2 -O3'],
+                    verbose=2  )
+        return result
+    MtoN = dp(ref, cur, 10)
+    [plt.plot([i, MtoN[i]], [ref[i], cur[MtoN[i]]],'b-') for i in range(len(MtoN)) if MtoN[i]!=-1]
+
+
+    #%%
+    e0 = EpilineCalculator(xr,yr, relG(wGc[-1], wGc[0]), K)
+    err,dom = e0.searchEPL(frames[0], frames[-1])
+
+    pf()
+    plt.plot(err)
+
+    best = 156 # np.argmin(err)
+    v0 = e0.VfromD(dom[best])
+
+    xc,yc = e0.XYfromD(dom[best])
+    e1 = EpilineCalculator(xc,yc, relG(wGc[0], wGc[-1]), K)
+    err1,dom1 = e1.searchEPL(frames[-1], frames[0])
+    plt.plot(err1)
+    best1 = np.argmin(err1)
+    v = e1.VfromD(dom1[best1])
+    print v0,v
+
 
     def test_EpilineCalculator():
         try:

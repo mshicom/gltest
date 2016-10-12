@@ -625,9 +625,6 @@ if __name__ == "__main__":
                     plt.pause(0.01)
                     plt.waitforbuttonpress()
 
-
-
-
             p0 = f0.getId()
             plotline(p0)
             minmax,y = getData(0, p0)
