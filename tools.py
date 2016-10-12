@@ -140,3 +140,26 @@ class IndexTracker(object):
         self.im.set_data(self.X[self.ind])
         self.ax.set_ylabel('slice %s' % self.ind)
         self.im.axes.figure.canvas.draw()
+
+
+class Slider:
+    """
+    example:
+        l1,l2 = plt.plot(ref,'r', cur,'b')
+        Slider(l2)
+    """
+    def __init__(self, obj):
+        self.obj = obj
+        self.axes = obj.axes
+        self.figure = obj.figure
+        self.figure.canvas.mpl_connect("scroll_event", self.onscroll)
+        self.acc = 0
+
+    def onscroll(self, event):
+        if event.inaxes ==self.axes :
+            inc = -1 if event.button == 'down' else 1
+            self.acc += inc
+            self.obj.set_xdata(self.obj.get_data()[0]+inc)
+            self.axes.set_title("offset:%d" % self.acc)
+            self.figure.canvas.draw()
+            self.figure.canvas.flush_events()

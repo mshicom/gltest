@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 
 import scipy
 
-from tools import loaddata3
+from tools import *
 def sample(dIc,x,y):
     x,y = np.atleast_1d(x, y)
     return scipy.ndimage.map_coordinates(dIc, (y,x), order=1, cval=np.nan)
@@ -384,16 +384,16 @@ if __name__ == "__main__":
 
     #%%
     ref, cur = sampleEpl(xr, yr, frames[0], frames[-1], relG(wGc[-1], wGc[0]), K)
-    pf()
-    plt.plot(ref,'r',
-             cur,'b')
+    f = pf()
+    l1,l2 = plt.plot(ref,'r', cur,'b')
+    Slider(l2)
+
 
     from scipy import weave
     def dp(ref, cur, occ_cost):
         result = np.full_like(ref, -1,'i2')
         code = r"""
             size_t M = Nref[0];
-
             size_t N = Ncur[0];
             size_t N1 = N+1;
             auto start = std::chrono::system_clock::now();
@@ -409,11 +409,18 @@ if __name__ == "__main__":
             for (size_t n=1; n<=N; n++)
                 C(0, n) = n*occ_cost;
 
+            const size_t win_hsize = 2;
             for (size_t m=1,md=0; m<=M; m++,md++)
-                for(size_t n=1,nd=0; n<=N; n++,nd++ )
-                {
+                for(size_t n=1,nd=0; n<=N; n++,nd++ ) {
 
-                    float Edata = std::fabs((float)REF1(md) - (float)CUR1(nd));
+                    float Edata = 0;
+                    if(md >= win_hsize && md <= M-win_hsize
+                    && nd >= win_hsize && nd <= N-win_hsize) {
+                        for(size_t i=0; i<2*win_hsize+1; i++)
+                            Edata += std::fabs((float)REF1(md-win_hsize+i) - (float)CUR1(nd-win_hsize+i));
+                    }
+                    else
+                        Edata = std::fabs((float)REF1(md) - (float)CUR1(nd));
                     float c1 = C(m-1, n-1) + Edata;
 
 
@@ -463,7 +470,7 @@ if __name__ == "__main__":
                     verbose=2  )
         return result
     MtoN = dp(ref, cur, 10)
-    [plt.plot([i, MtoN[i]], [ref[i], cur[MtoN[i]]],'b-') for i in range(len(MtoN)) if MtoN[i]!=-1]
+    [plt.plot([i, MtoN[i]], [ref[i], cur[MtoN[i]]],'g--') for i in range(len(MtoN)) if MtoN[i]!=-1]
 
 
     #%%
