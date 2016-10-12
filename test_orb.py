@@ -266,9 +266,9 @@ class Frame(object):
             p_id, = np.where(vm)
             d_min[p_id] = np.maximum(ec.DfromV(r_list[0][p_id], p_id), dmin[p_id])
             d_max[p_id] = np.minimum(ec.DfromV(r_list[1][p_id], p_id), dmax[p_id])
-            res += (d.copy(),vm.copy(),var.copy())
+            res.append((d.copy(),vm.copy(),d_max-d_min))
 
-        return d,vm,var,res
+        return res
 
 def getG(f0,f1):
     '''return 1G0, which p1 = 1G0 * p0  '''
@@ -325,11 +325,12 @@ def searchEPL(px, py, imr, imc, cGr, K, dmin=0, dmax=1e6, win_width=4, keepErr=F
         {
             size_t out_size = cur.size()-ref.size();
             assert(out_size>0);
+            size_t in_size = ref.size();
 
             min_diff = std::numeric_limits<float>::infinity();
             for(size_t i=0; i <= out_size; i++ ){
                 float diff = 0;
-                for(size_t j=0; j < ref.size();j++ ){
+                for(size_t j=0; j < in_size;j++ ){
                     float err = ref[j] - cur[i+j];
                     err = (err>0.5)? 0.5 : err;
                     diff += err*err;
@@ -443,10 +444,10 @@ def searchEPL(px, py, imr, imc, cGr, K, dmin=0, dmax=1e6, win_width=4, keepErr=F
 
 
 if __name__ == "__main__":
-#    frames, wGc, K, Zs = loaddata1()
-    frames, wGc, K, Zs = loaddata2()
+    frames, wGc, K, Zs = loaddata1()
+#    frames, wGc, K, Zs = loaddata2()
 #    from orb_kfs import loaddata4
-#    frames, wGc, K = loaddata4(20)
+#    frames, wGc, K = loaddata4(10)
 #    EpilineDrawer(frames[0:], wGc[0:], K)
     h,w = frames[0].shape[:2]
     fx,fy,cx,cy = K[0,0],K[1,1],K[0,2],K[1,2]
@@ -472,12 +473,21 @@ if __name__ == "__main__":
     cGr = [getG(f,f0) for f in fs]
 
     #f0.px,f0.py = np.atleast_1d(170,267)
-    d,vm,var = f0.searchEPL(fs[2], K, dmin=iD(5), dmax=iD(0.1), win_width=3, levels=5, keepErr=0) #
-    plotxyzrgb(f0.makePC(1.0/d, conditions(vm, d>iD(5), d<iD(0.1))))
+    d0,vm0,err = f0.searchEPL(fs[-1], K, dmin=iD(5), dmax=iD(0.1), win_width=3, levels=1, keepErr=0) #
+    plotxyzrgb(f0.makePC(1.0/d0, conditions(vm0, d0>iD(5), d0<iD(0.1))))
+
     dba = d.copy()
     ba(f0.px, f0.py, dba, vm, [frames[0],frames[6]], [cGr[0], cGr[6]], K)
     plotxyzrgb(f0.makePC(1.0/dba, conditions(vm, dba>iD(5), dba<iD(0.1))))
 
+    res = f0.searchEPLs(fs[1:], K, dmin=iD(5), dmax=iD(0.1), win_width=3) #
+    for d,vm,err in res:
+        plotxyzrgb(f0.makePC(1.0/d, conditions(vm, d>iD(5), d<iD(0.1))))
+        plt.waitforbuttonpress()
+
+    davg = np.add.reduce([e[0] for e in res])/len(res)
+    vmavg = reduce(conditions,[e[1] for e in res])
+    plotxyzrgb(f0.makePC(1.0/davg, conditions(vmavg, davg>iD(5), davg<iD(0.1))))
 
     ims = {0:frames[:5]}
     Ks  = {0:K}

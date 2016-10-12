@@ -7,6 +7,7 @@ Created on Mon Aug 22 11:50:58 2016
 """
 import numpy as np
 import matplotlib.pyplot as plt
+
 import scipy
 
 from tools import loaddata1
@@ -246,7 +247,7 @@ class EpilineDrawer(object):
         gs = plt.GridSpec(2,2)
         a1,a2 = f.add_subplot(gs[0,0]),f.add_subplot(gs[0,1])
         a3 = f.add_subplot(gs[1,:])
-        #plt.tight_layout()
+        plt.tight_layout()
 
         a1.imshow(frames[0], interpolation='none', aspect=1)
         a1.set_title('pick a point in this nPinfimage')
@@ -262,22 +263,22 @@ class EpilineDrawer(object):
         a1.plot(xr, yr,'r.')
         a1.set_title(' ')
 
-        line1, = a2.plot([],'r-')        # cost function curve
+        line1, = a2.plot([],'r-')        # epiline
         ticks, = a2.plot([],'b.',ms=5)   # fixed depth ticks
-        Ddot, = a2.plot([],'r.',ms=5)    # moving depth tick
+        Ddot, = a2.plot([],'ro',ms=5)    # moving depth tick
         lineD = a3.axvline()             # vline for moving depth tick
         Z = np.array([1e-2, 1e-1, 1e0, 1e1, 1e2])
         res,dom = {},{}
+
 
         for index in range(1, len(frames)):
             cGr = relG(wGc[index],wGc[0])
             ec = EpilineCalculator(xr, yr, cGr, K)
             res[index], dom[index] = ec.searchEPL(frames[0].astype('f'), frames[index].astype('f'),3,0)
             self.ecs[index] = ec
-        curv1, = a3.plot(res[1])
+        curv1, = a3.plot(res[1])    # cost function curve
 
-        self.pmouse = np.zeros(2)
-        def update():
+        def updateFrame():
             index = self.ind
             i2.set_data(frames[index])
             a2.set_title('frame %d' % index)
@@ -304,20 +305,16 @@ class EpilineDrawer(object):
                 curv1.set_data([],[])
             f.canvas.draw()
 
-        def updateDot():
+        self.d = np.inf
+        self.v = 0
+        def updateFloatingTick():
             ec = self.ecs[self.ind]
+            v0, pbase = ec.dxy.ravel(), ec.nPinf.ravel()
 
-            pbase = ec.nPinf.ravel()
-
-            v1 = self.pmouse - pbase
-            v0 = ec.dxy.ravel()
-            v = np.maximum(0, v0.dot(v1))
-            pset =  pbase + v*v0
-
+            pset =  pbase + self.v*v0
             Ddot.set_data(pset[0], pset[1])
-
-            d = ec.DfromV(v)
-            lineD.set_xdata(d)
+            lineD.set_xdata(self.d)
+            a3.set_title('depth: %f' % (1/self.d))
             f.canvas.draw()
 
         def onscroll(event):
@@ -325,16 +322,27 @@ class EpilineDrawer(object):
                 self.ind = np.clip(self.ind + 1, 1, slices)
             else:
                 self.ind = np.clip(self.ind - 1, 1, slices)
-            update()
-            updateDot()
+            updateFrame()
+            updateFloatingTick()
 
         def onmotion(event):
             if event.inaxes == a2:
-                self.pmouse = np.array([event.xdata, event.ydata])
-                updateDot()
+                pmouse = np.array([event.xdata, event.ydata])
+                ec = self.ecs[self.ind]
+                v0, pbase = ec.dxy.ravel(), ec.nPinf.ravel()
 
+                v1 = pmouse - pbase
+                self.v = np.maximum(0, v0.dot(v1))
+                self.d = ec.DfromV(self.v)
+                updateFloatingTick()
 
-        update()
+            elif event.inaxes == a3:
+                ec = self.ecs[self.ind]
+                self.d = np.maximum(0, event.xdata)
+                self.v = ec.VfromD(self.d)
+                updateFloatingTick()
+
+        updateFrame()
         f.canvas.mpl_connect('scroll_event', onscroll)
         f.canvas.mpl_connect('motion_notify_event', onmotion)
 
