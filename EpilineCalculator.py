@@ -204,36 +204,61 @@ class EpilineCalculator(object):
                 return self.DfromV(vec(np.arange(vmin,vmax+1)), pid).ravel()
         self.getDRange = getDRange
 
+        def createEPLSampler(imr, imc):
+            def sampleRef(v, p_id=0):
+                pos = vec(xr[p_id], yr[p_id]) + vec(-dxy_local[:,p_id])*v
+                return sample(imr, pos[0], pos[1])
+
+            def sampleCur(v, p_id=0):
+                pos = vec(nPinf[:,p_id]) + vec(dxy[:,p_id])*v
+                return sample(imc, pos[0], pos[1])
+
+            return sampleRef, sampleCur
+        self.createEPLSampler = createEPLSampler
+
         def searchEPL(imr, imc, win_width=3, index=None, dmin=0.0, dmax=1e6):
             if index is None:
                 index = range(len(xr))
             index = np.atleast_1d(index)
 
-            offset = np.arange(-win_width, win_width+1)
+            sampleRef, sampleCur = self.createEPLSampler(imr.astype('f'), imc.astype('f'))
+            offset_l = np.arange(-win_width, 1)     # := [-win_width, -2, -1,  0]
+            offset_r = np.arange(0, win_width+1)    # := [0, 1, 2, win_width]
+
             vmin,vmax, d_min, d_max, valid_mask = getLimits(imr.shape, dmin, dmax)
-            res,dom = [],[]
+            resl,resr,dom = [],[],[]
             for p_id in index:
                 if not valid_mask[p_id]:
-                    res.append([])
-                    dom.append([])
+                    resl.append([]), resr.append([]), dom.append([])
                     continue
-                sam_min,sam_max = vmin[p_id], vmax[p_id]
-                sam_cnt = int(sam_max-sam_min+1)
-                dom.append(self.DfromV(np.arange(sam_min, sam_max+1), p_id))
-                err = np.empty(sam_cnt, 'f')
+                v0_cur = np.arange(vmin[p_id], vmax[p_id])     # ps: v_cur[0]=vmin,  v_cur[-1]≤vmax
+                sam_cnt = len(v0_cur)
+                dom.append(self.DfromV(v0_cur, p_id) )
 
-                ref_pos = vec(xr[p_id], yr[p_id]) - vec(dxy_local[:,p_id])*offset
-                cur_pos = vec(nPinf[:,p_id]) + vec(dxy[:,p_id])*np.arange(np.floor(vmin[p_id])-win_width, np.ceil(vmax[p_id])+win_width+1)
-                ref = sample(imr.astype('f'), ref_pos[0], ref_pos[1])
-                cur = sample(imc.astype('f'), cur_pos[0], cur_pos[1])
+                # left part
+                err = np.empty(sam_cnt, 'f')
+                ref = sampleRef(offset_l, p_id)
+                ve_cur = np.arange(vmin[p_id]-win_width, vmax[p_id]+1)
+                cur = sampleCur(ve_cur, p_id)
                 for i in xrange(sam_cnt):
-                    diff = ref - cur[i:i+2*win_width+1]
-                    err[i] = np.sum(diff**2)
-                res.append(err)
+                    diff = ref - cur[i:i+win_width+1]
+                    err[i] = np.sum(np.abs(diff))
+                resl.append(err)
+
+                # right part
+                err = np.empty(sam_cnt, 'f')
+                ref = sampleRef(offset_r, p_id)
+                ve_cur = np.arange(vmin[p_id], vmax[p_id]+win_width+1)
+                cur = sampleCur(ve_cur, p_id)
+                for i in xrange(sam_cnt):
+                    diff = ref - cur[i:i+win_width+1]
+                    err[i] = np.sum(np.abs(diff))
+                resr.append(err)
+
             if len(index)==1:
-                return res[0],dom[0]
+                return resl[0],resr[0],dom[0]
             else:
-                return res,dom
+                return resl,resr,dom
         self.searchEPL = searchEPL
 
 class EpilineDrawer(object):
@@ -268,15 +293,16 @@ class EpilineDrawer(object):
         Ddot, = a2.plot([],'ro',ms=5)    # moving depth tick
         lineD = a3.axvline()             # vline for moving depth tick
         Z = np.array([1e-2, 1e-1, 1e0, 1e1, 1e2])
-        res,dom = {},{}
-
+        resl,resr,dom = {},{},{}
 
         for index in range(1, len(frames)):
             cGr = relG(wGc[index],wGc[0])
             ec = EpilineCalculator(xr, yr, cGr, K)
-            res[index], dom[index] = ec.searchEPL(frames[0].astype('f'), frames[index].astype('f'),3,0)
+            resl[index],resr[index], dom[index] = ec.searchEPL(frames[0].astype('f'), frames[index].astype('f'),win_width=3)
             self.ecs[index] = ec
-        curv1, = a3.plot(res[1])    # cost function curve
+        curv1, = a3.plot(resl[1],'r:')    # cost function curve
+        curv2, = a3.plot(resr[1],'b:')
+        curv3, = a3.plot(resl[1]+resr[1],'g')
 
         def updateFrame():
             index = self.ind
@@ -285,7 +311,7 @@ class EpilineDrawer(object):
 
             rGc = relG(wGc[0], wGc[index])
             ec = self.ecs[index]
-            dom_, res_ = dom[index], res[index]
+            dom_, resl_, resr_ = dom[index], resl[index], resr[index]
             vmin, vmax, d_min, d_max, valid_mask = ec.getLimits(frames[index].shape)
             if valid_mask:
                 pmin = ec.XYfromV(vmin)
@@ -295,14 +321,14 @@ class EpilineDrawer(object):
                 pcur = K.dot(transform(cGr, backproject(xr, yr, K)*Z))
                 pcur /= pcur[2]
                 ticks.set_data(pcur[0],pcur[1])
-                curv1.set_data(dom_, res_)
+                curv1.set_data(dom_, resl_)
+                curv2.set_data(dom_, resr_)
+                curv3.set_data(dom_, resl_+resr_)
                 a3.set_xlim(dom_[0], dom_[-1])
             else:
                 print 'frame %d epiline not valid' % index
-                line1.set_data([],[])
-                ticks.set_data([],[])
-                Ddot.set_data([],[])
-                curv1.set_data([],[])
+                # erase everything
+                [obj.set_data([],[]) for obj in [line1,ticks,Ddot,curv1,curv2,curv3]]
             f.canvas.draw()
 
         self.d = np.inf
@@ -352,9 +378,9 @@ def InterceptBox(shape, p0,  dxy):
     dx,dy = dxy[:2]
     x0,y0 = p0[:2]
 
-    tx = np.r_[0-x0, w-x0]/dx
+    tx = np.r_[0-x0, w-1-x0]/dx
     tx = np.where(dx>0, tx, np.roll(tx,1,axis=0))   # tx[0,1] := [v_xmin,v_xmax]
-    ty = np.r_[0-y0, h-y0]/dy
+    ty = np.r_[0-y0, h-1-y0]/dy
     ty = np.where(dy>0, ty, np.roll(ty,1,axis=0))   # ty[0,1] := [v_ymin,v_ymax]\
     v_xmin,v_xmax,v_ymin,v_ymax = tx[0],tx[1],ty[0],ty[1]
     vmax = np.minimum(v_xmax, v_ymax)
@@ -362,32 +388,40 @@ def InterceptBox(shape, p0,  dxy):
     valid_mask = conditions(v_xmin<v_ymax, v_xmax>v_ymin, vmax>0)
     return vmin, vmax, valid_mask
 
-def sampleEpl(xr,yr, imr, imc, cGr, K):
+def sampleEpl(xr,yr, imr, imc, cGr, K, out_minmax=False):
+    # imr,imc = frames[0],frames[-1]
     e = EpilineCalculator(xr,yr, cGr, K)
+    vrange = []
+
+    sampleRef, sampleCur = e.createEPLSampler(imr.astype('f'), imc.astype('f'))
 
     vmin, vmax, valid_mask = InterceptBox(imr.shape, vec(xr,yr), -e.dxy_local)
-    pref = -np.arange(np.ceil(vmin+1),np.floor(vmax))*e.dxy_local + vec(xr,yr)
-    ref = sample(imr, pref[0], pref[1])
+    ref = sampleRef(np.arange(vmin, vmax))
+    vrange.extend([vmin, vmax])
 
-    vmin, vmax, valid_mask = InterceptBox(imr.shape, e.nPinf, e.dxy )
-    pcur = np.arange(np.ceil(vmin+1),np.floor(vmax))*e.dxy + e.nPinf
-    cur = sample(imc, pcur[0], pcur[1])
-    return ref, cur
+    vmin, vmax, valid_mask = InterceptBox(imc.shape, e.nPinf, e.dxy )
+    cur = sampleCur(np.arange(vmin, vmax))
+    vrange.extend([vmin, vmax])
+
+    if out_minmax:
+        return ref, cur, vrange
+    else:
+        return ref, cur
 
 if __name__ == "__main__":
 #    frames, wGc, K, _ = loaddata1()
     from orb_kfs import loaddata4
     frames, wGc, K = loaddata4(10)
 
-    xr,yr = 718.0, 451.0
+    xr,yr = 337,240
     e=EpilineDrawer(frames, wGc, K, (xr,yr))
 
     #%%
-    ref, cur = sampleEpl(xr, yr, frames[0], frames[-1], relG(wGc[-1], wGc[0]), K)
+    ref, cur, vr = sampleEpl(xr, yr, frames[0], frames[-1], cGr=relG(wGc[-1], wGc[0]), K=K, out_minmax=True)
     f = pf()
-    l1,l2 = plt.plot(ref,'r', cur,'b')
+    l1,l2 = plt.plot(np.arange(vr[0],vr[1]),ref,'r',
+                     np.arange(vr[2],vr[3]),cur,'b')
     Slider(l2)
-
 
     from scipy import weave
     def dp(ref, cur, occ_cost):
@@ -469,23 +503,24 @@ if __name__ == "__main__":
                     extra_compile_args=['-std=gnu++11 -msse2 -O3'],
                     verbose=2  )
         return result
-    MtoN = dp(ref, cur, 10)
-    [plt.plot([i, MtoN[i]], [ref[i], cur[MtoN[i]]],'g--') for i in range(len(MtoN)) if MtoN[i]!=-1]
+    MtoN = dp(ref, cur, 100)
+    [plt.plot([i+vr[0], MtoN[i]+vr[2]], [ref[i], cur[MtoN[i]]],'g--') for i in range(len(MtoN)) if MtoN[i]!=-1]
 
 
     #%%
-    e0 = EpilineCalculator(xr,yr, relG(wGc[-1], wGc[0]), K)
-    err,dom = e0.searchEPL(frames[0], frames[-1])
-
+    e0 = EpilineCalculator(xr,yr, cGr=relG(wGc[-1], wGc[0]), K=K)
+    errl,errr,dom = e0.searchEPL(frames[0], frames[-1])
+    err = errl+errr
     pf()
     plt.plot(err)
 
-    best = 156 # np.argmin(err)
+    best = np.argmin(err)
     v0 = e0.VfromD(dom[best])
 
     xc,yc = e0.XYfromD(dom[best])
     e1 = EpilineCalculator(xc,yc, relG(wGc[0], wGc[-1]), K)
-    err1,dom1 = e1.searchEPL(frames[-1], frames[0])
+    errl1,errr1,dom1 = e1.searchEPL(frames[-1], frames[0])
+    err1 = errl1+errr1
     plt.plot(err1)
     best1 = np.argmin(err1)
     v = e1.VfromD(dom1[best1])
