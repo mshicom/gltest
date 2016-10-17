@@ -267,8 +267,8 @@ class Frame(object):
             d_min[p_id] = np.maximum(ec.DfromV(r_list[0][p_id], p_id), dmin[p_id])
             d_max[p_id] = np.minimum(ec.DfromV(r_list[1][p_id], p_id), dmax[p_id])
             res.append((d.copy(),vm.copy(),d_max-d_min))
-
         return res
+
 
 def getG(f0,f1):
     '''return 1G0, which p1 = 1G0 * p0  '''
@@ -444,10 +444,10 @@ def searchEPL(px, py, imr, imc, cGr, K, dmin=0, dmax=1e6, win_width=4, keepErr=F
 
 
 if __name__ == "__main__":
-    frames, wGc, K, Zs = loaddata1()
+#    frames, wGc, K, Zs = loaddata1()
 #    frames, wGc, K, Zs = loaddata2()
-#    from orb_kfs import loaddata4
-#    frames, wGc, K = loaddata4(10)
+    from orb_kfs import loaddata4
+    frames, wGc, K = loaddata4(10)
 #    EpilineDrawer(frames[0:], wGc[0:], K)
     h,w = frames[0].shape[:2]
     fx,fy,cx,cy = K[0,0],K[1,1],K[0,2],K[1,2]
@@ -464,7 +464,7 @@ if __name__ == "__main__":
     f0,f1 = fs[0],fs[3]
     f0.extractPts(K)
 
-    if 1:
+    if 0:
         baseline = lambda f0,f1: np.linalg.norm(getG(f0, f1)[:3,3])
         fs.sort(key=lambda f: baseline(f0,f))
         [baseline(f0,f) for f in fs]
@@ -473,7 +473,7 @@ if __name__ == "__main__":
     cGr = [getG(f,f0) for f in fs]
 
     #f0.px,f0.py = np.atleast_1d(170,267)
-    d0,vm0,err = f0.searchEPL(fs[-1], K, dmin=iD(5), dmax=iD(0.1), win_width=3, levels=1, keepErr=0) #
+    d0,vm0,err = f0.searchEPL(fs[-3], K, dmin=iD(5), dmax=iD(0.1), win_width=3, levels=1, keepErr=0) #
     plotxyzrgb(f0.makePC(1.0/d0, conditions(vm0, d0>iD(5), d0<iD(0.1))))
 
     dba = d.copy()
@@ -508,8 +508,86 @@ if __name__ == "__main__":
         plotxyzrgb(f0.makePC(1.0/ds[level_ba], conditions(vm, ds[level_ba]>iD(5), ds[level_ba]<iD(0.1))))
         plt.waitforbuttonpress()
 #%%
-    p = f0.getId()
-    f0.px,f0.py = np.atleast_1d(52,256)
+
+    class CostVolume:
+        def __init__(self, ref_image, wGc, camera_matrix, depth_min, depth_max, depth_layers=32):
+
+            self.depth_min = depth_min
+            self.depth_max = depth_max
+            self.depth_layers = depth_layers
+            self.depth_list = np.linspace(1.0/depth_min, 1.0/depth_max, depth_layers)
+
+            self.shape_image = ref_image.shape
+            self.cost_volume = np.zeros((depth_layers,)+self.shape_image, dtype=np.float32)
+            self.hit_volume  = np.ones((depth_layers,)+self.shape_image, dtype=np.int16)
+
+            self.ref_image = np.ascontiguousarray(ref_image/255.0, dtype=np.float32)
+            self.wGc = wGc
+            self.K = camera_matrix
+            dx = cv2.Scharr(ref_image, ddepth=-1, dx=1, dy=0)
+            dy = cv2.Scharr(ref_image, ddepth=-1, dx=0, dy=1)
+            self.ref_grad = np.sqrt(dx**2+dy**2)
+
+        def UpdateCost(self, I, wGc, plot=False):
+
+            cGr = np.dot(np.linalg.inv(wGc), self.wGc)
+            M1 = np.dot(np.hstack([self.K, [[0], [0], [0]]]), cGr)
+            M2 = np.vstack([np.linalg.inv(self.K), [0, 0, 0]])
+
+            I = np.ascontiguousarray(I/255.0, dtype=np.float32)
+            dx = cv2.Scharr(I, ddepth=-1, dx=1, dy=0)
+            dy = cv2.Scharr(I, ddepth=-1, dx=0, dy=1)
+            cur_grad = np.sqrt(dx**2+dy**2)
+            h, w = I.shape
+
+            cost = np.empty_like(self.cost_volume, dtype=np.float32)
+            hit = np.empty_like(cost, dtype=np.int8)
+            if plot:
+                plt.figure("warp")
+                im = plt.imshow(I, cmap='gray')
+
+            for i, d_inv in enumerate(self.depth_list):
+                M2[3, 2] = d_inv
+                M = np.dot(M1, M2)
+                Iw = cv2.warpPerspective(I, M, (w, h),
+                                         flags=cv2.WARP_INVERSE_MAP+cv2.INTER_LINEAR,
+                                         borderMode=cv2.BORDER_CONSTANT,
+                                         borderValue=np.nan)
+                Gw = cv2.warpPerspective(cur_grad, M, (w, h),
+                                         flags=cv2.WARP_INVERSE_MAP+cv2.INTER_LINEAR,
+                                         borderMode=cv2.BORDER_CONSTANT,
+                                         borderValue=np.nan)
+                mask = np.isnan(Iw)
+                err = 0.8*np.abs(Iw - self.ref_image) +0.2*np.abs(Gw - self.ref_grad)
+                err[mask] = 0
+
+                cost[i] = cv2.blur(err, (3,3))##err#f.filter(err)
+                cost[i][mask] = 0
+                hit[i] = np.logical_not(mask)
+                if plot:
+                    im.set_data(cost[i])
+                    plt.pause(0.001)
+            self.cost_volume = (cost + self.hit_volume*self.cost_volume) / (self.hit_volume+hit)  # Cumulative moving average
+            self.hit_volume += hit
+            return cost, hit
+
+        def GetCostMinimum(self):
+            return self.depth_list[np.argmin(self.cost_volume, axis=0)]
+
+    refid = 0
+    Iref, G0 = frames[refid], wGc[refid]
+    cv = CostVolume(Iref, G0, K, 0.1, 5.0, 32)
+
+    for i, Icur in enumerate(frames):
+        if i == refid:
+            continue
+        print 'frame {0}'.format(i)
+        costupdate, hit = cv.UpdateCost(Icur, wGc[i])
+
+    d = cv.GetCostMinimum()
+    dv = np.full_like(d, np.nan)
+    dv[f0.py,f0.px] = d[f0.py,f0.px]
+    pis(dv,'jet')
 
 
 
