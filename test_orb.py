@@ -510,85 +510,140 @@ if __name__ == "__main__":
 #%%
 
     class CostVolume:
-        def __init__(self, ref_image, wGc, camera_matrix, depth_min, depth_max, depth_layers=32):
+        def __init__(self, ref_image, wGc, camera_matrix, dmin, dmax, dlayers=32, dense=True):
 
-            self.depth_min = depth_min
-            self.depth_max = depth_max
-            self.depth_layers = depth_layers
-            self.depth_list = np.linspace(1.0/depth_min, 1.0/depth_max, depth_layers)
+            ref_image = ref_image.astype(np.float32)
+            self.depth_min, self.depth_max, self.depth_layers = dmin, dmax, dlayers
+            self.depth_list = np.linspace(dmin, dmax, dlayers)
 
-            self.shape_image = ref_image.shape
-            self.cost_volume = np.zeros((depth_layers,)+self.shape_image, dtype=np.float32)
-            self.hit_volume  = np.ones((depth_layers,)+self.shape_image, dtype=np.int16)
-
-            self.ref_image = np.ascontiguousarray(ref_image/255.0, dtype=np.float32)
             self.wGc = wGc
             self.K = camera_matrix
-            dx = cv2.Scharr(ref_image, ddepth=-1, dx=1, dy=0)
-            dy = cv2.Scharr(ref_image, ddepth=-1, dx=0, dy=1)
-            self.ref_grad = np.sqrt(dx**2+dy**2)
+            dy,dx = np.gradient(ref_image)
+            grad = np.sqrt(dx**2+dy**2)
+
+            self.dense = dense
+            u, v = np.meshgrid(range(w),range(h))
+            if dense:
+                self.py, self.px = u.ravel(),v.ravel()
+                self.ref_image = ref_image
+                self.ref_grad = grad
+
+            else:
+                border_width = 5
+                mask = conditions(w-border_width>u, u>=border_width,
+                                  h-border_width>v, v>=border_width, grad>5) # exclude border pixels
+                y,x = np.where(mask)
+                self.py, self.px = y,x
+                self.ref_image = ref_image[y,x]
+                self.ref_grad = grad[y,x]
+
+            self.P = backproject(self.px, self.py, camera_matrix)
+            self.cost_volume = np.zeros((dlayers,)+self.ref_image.shape, dtype=np.float32)
+            self.hit_volume  = np.ones_like(self.cost_volume, dtype=np.int16)
+
 
         def UpdateCost(self, I, wGc, plot=False):
 
             cGr = np.dot(np.linalg.inv(wGc), self.wGc)
-            M1 = np.dot(np.hstack([self.K, [[0], [0], [0]]]), cGr)
-            M2 = np.vstack([np.linalg.inv(self.K), [0, 0, 0]])
+            R,T = cGr[:3,:3], cGr[:3,3]
+            M1 = self.K.dot(R)
+            M2 = self.K.dot(T)
 
-            I = np.ascontiguousarray(I/255.0, dtype=np.float32)
-            dx = cv2.Scharr(I, ddepth=-1, dx=1, dy=0)
-            dy = cv2.Scharr(I, ddepth=-1, dx=0, dy=1)
-            cur_grad = np.sqrt(dx**2+dy**2)
-            h, w = I.shape
-
+            I = I.astype(np.float32)
+#            dy,dx = np.gradient(I)
+#            cur_grad = np.sqrt(dx**2+dy**2)
             cost = np.empty_like(self.cost_volume, dtype=np.float32)
             hit = np.empty_like(cost, dtype=np.int8)
             if plot:
-                plt.figure("warp")
-                im = plt.imshow(I, cmap='gray')
+                fig,ax = plt.subplots(1,1,num="warp")
+                im = ax.imshow(I, cmap='gray')
 
             for i, d_inv in enumerate(self.depth_list):
-                M2[3, 2] = d_inv
-                M = np.dot(M1, M2)
-                Iw = cv2.warpPerspective(I, M, (w, h),
-                                         flags=cv2.WARP_INVERSE_MAP+cv2.INTER_LINEAR,
-                                         borderMode=cv2.BORDER_CONSTANT,
-                                         borderValue=np.nan)
-                Gw = cv2.warpPerspective(cur_grad, M, (w, h),
-                                         flags=cv2.WARP_INVERSE_MAP+cv2.INTER_LINEAR,
-                                         borderMode=cv2.BORDER_CONSTANT,
-                                         borderValue=np.nan)
+                M = M1.copy()
+                M[:, 2] += M2/d_inv
+                p2d = metric(M.dot(self.P))
+                Iw = sample(I, p2d[0], p2d[1])
+                Iw.shape = self.ref_image.shape
+
                 mask = np.isnan(Iw)
-                err = 0.8*np.abs(Iw - self.ref_image) +0.2*np.abs(Gw - self.ref_grad)
+                err = np.abs(Iw - self.ref_image)
                 err[mask] = 0
 
-                cost[i] = cv2.blur(err, (3,3))##err#f.filter(err)
-                cost[i][mask] = 0
+                if self.dense:
+                    cost[i] = cv2.blur(err, (3,3))
+                    cost[i][mask] = 0
+                else:
+                    cost[i] = err
                 hit[i] = np.logical_not(mask)
                 if plot:
-                    im.set_data(cost[i])
-                    plt.pause(0.001)
+                    if not self.dense:
+                        warp_im = np.zeros_like(I)
+                        warp_im[self.py,self.px] = Iw
+                        im.set_data(self.im - warp_im)
+                    else:
+                        im.set_data(cost[i])
+                    plt.pause(0.0001)
             self.cost_volume = (cost + self.hit_volume*self.cost_volume) / (self.hit_volume+hit)  # Cumulative moving average
             self.hit_volume += hit
             return cost, hit
 
         def GetCostMinimum(self):
-            return self.depth_list[np.argmin(self.cost_volume, axis=0)]
+            return self.depth_list[np.argmin(self.cost_volume, axis=0)].reshape(self.ref_image.shape)
+
+        def makePC(self, depth, valid_mask=None):#
+            p3d = self.P*depth.ravel()
+            I = np.tile(self.ref_image.ravel(),(3,1))
+            P = np.vstack([p3d, I]).T
+            return P[np.where(valid_mask)[0],:] if not valid_mask is None else P     # Nx6
+
+    def PlotPixelCost(cv):
+        fig2,(ax3,ax4) = plt.subplots(2,1,num='PlotPixelCost')
+        ax3.imshow(cv.ref_image, cmap='gray')
+
+        dot, = ax3.plot([], [], 'r*')
+        lines, = ax4.plot([], [], '-*')
+        vline1 = ax4.axvline(0, color='b', linestyle='--', )
+
+        ax4.set_xlim(cv.depth_list[0], cv.depth_list[-1])
+        ax4.set_ylim(0, 1)
+
+        while True:
+            pts = fig2.ginput(1, timeout=-1, show_clicks=True)
+            if len(pts) == 0:
+                return
+
+            pt = pts.pop()
+            pt = np.round(pt).astype('int')
+            c = cv.cost_volume[:, pt[1], pt[0]]
+
+            dot.set_data(pt)
+            lines.set_data(cv.depth_list, c)
+            vline1.set_xdata(cv.depth_list[np.argmin(c)])
+            plt.pause(0.1)
 
     refid = 0
     Iref, G0 = frames[refid], wGc[refid]
-    cv = CostVolume(Iref, G0, K, 0.1, 5.0, 32)
+    cv = CostVolume(Iref, G0, K, 0.2, 4.0, 32, False)
+    fig1,(ax1,ax2) = plt.subplots(2,1,num='cost')
+    ax1.imshow(Iref, cmap='gray')
+#    if cv.dense:
+#        pts = np.asarray(plt.ginput(1, timeout=-1)[0], dtype=np.int)
 
     for i, Icur in enumerate(frames):
         if i == refid:
             continue
         print 'frame {0}'.format(i)
-        costupdate, hit = cv.UpdateCost(Icur, wGc[i])
+        costupdate, hit = cv.UpdateCost(Icur, wGc[i], 0)
+#        plt.figure('cost')
+#        ax2.plot(cv.depth_list, costupdate[:, pts[1], pts[0]]/hit[:, pts[1], pts[0]], '-*')
+        plt.pause(0.001)
 
     d = cv.GetCostMinimum()
-    dv = np.full_like(d, np.nan)
-    dv[f0.py,f0.px] = d[f0.py,f0.px]
-    pis(dv,'jet')
-
+#    dv = np.full_like(Iref, np.nan)
+#    dv[cv.py,cv.px] = d #d[f0.py,f0.px]
+#    ax1.imshow(dv,'jet')
+    plotxyzrgb(cv.makePC(d.ravel()))
+#    PlotPixelCost(cv)
 
 
 #%%

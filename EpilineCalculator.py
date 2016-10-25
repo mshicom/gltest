@@ -262,7 +262,7 @@ class EpilineCalculator(object):
         self.searchEPL = searchEPL
 
 class EpilineDrawer(object):
-    def __init__(self, frames, wGc, K, p0=None):
+    def __init__(self, frames, wGc, K, p0=None, win_width=3):
 
         self.ind = 1
         self.ecs = {}
@@ -413,8 +413,34 @@ if __name__ == "__main__":
     from orb_kfs import loaddata4
     frames, wGc, K = loaddata4(10)
 
-    xr,yr = 337,240
-    e=EpilineDrawer(frames, wGc, K, (xr,yr))
+    xr,yr = 715,438
+    e = EpilineDrawer(frames, wGc, K, (xr,yr))
+    a1,a2,a3 = plt.gcf().axes
+
+
+#%%
+    ec = EpilineCalculator(xr,yr,relG(wGc[-1], wGc[0]),K)
+    sref, scur = ec.createEPLSampler(frames[0].astype('d'), frames[-1].astype('d'))
+    vmin,vmax,dmin,dmax,vmask = ec.getLimits(frames[0].shape)
+    resl,resr, dom = ec.searchEPL(frames[0].astype('d'), frames[-1].astype('d'),win_width=2)
+    res = resl+resr
+
+    particle_v,step = np.linspace(vmin,vmax,retstep=1,dtype='d')
+    window = np.array([-2,-1,0,1,2],'d')
+    ref = sref(window)
+#    ref /= np.linalg.norm(ref)
+    def measure(particle_v):
+        weight = np.zeros_like(particle_v)
+        for i,v in enumerate(particle_v):
+            cur = scur(v+window)
+#            cur /= np.linalg.norm(cur)
+            weight[i] = np.sum(np.abs(ref-cur)) #ref.dot(cur)
+        return weight
+    weight = measure(particle_v)
+    plt.plot(ec.DfromV(particle_v), weight, 'r*')
+    plt.plot(dom, res)
+
+
 
     #%%
     ref, cur, vr = sampleEpl(xr, yr, frames[0], frames[-1], cGr=relG(wGc[-1], wGc[0]), K=K, out_minmax=True)
