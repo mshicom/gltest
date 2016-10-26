@@ -18,7 +18,7 @@ import scipy.io
 from tools import *
 #%%
 frames, wGc, K, Z = loaddata1()
-imheight,imwidth = frames[0].shape[:2]
+h,w = frames[0].shape[:2]
 
 fx,fy,cx,cy = K[0,0],K[1,1],K[0,2],K[1,2]
 
@@ -53,40 +53,38 @@ class FBO_Test():
         # 4. Done & de-activate it
         glBindFramebuffer(GL_FRAMEBUFFER, 0)
 
-class GLWidget(QtOpenGL.QGLWidget):
-    def __init__(self, parent=None):
-        self.parent = parent
-        QtOpenGL.QGLWidget.__init__(self, parent)
 
-    def buildShaders(self):
-        imheight,imwidth = frames[0].shape[:2]
+class PlaneSweeper():
+    def __init__(self, height, width):
+        """ 1.Calculate NDC/Texture mapping matrix"""
+        xmin,xmax,ymin,ymax = 0.0, width-1.0, 0.0, height-1.0
 
-        A,B,C,D = 0., imwidth-1., 0., imheight-1.
-        map0 = np.array([[2/(A-B),   0, 1-2*A/(A-B)],
-                         [0,   2/(C-D), 1-2*C/(C-D)]])
+        mapNDC = np.array([[2/(xmin-xmax),   0, 1-2*xmin/(xmin-xmax)],
+                           [0,   2/(ymin-ymax), 1-2*ymin/(ymin-ymax)]])
 
-        map1 = np.array([[1/(B-A),   0, -A/(B-A)],
-                         [0,   1/(D-C), -C/(D-C)]])
+        mapTEX = np.array([[1/(xmax-xmin),   0, -xmin/(xmax-xmin)],
+                           [0,   1/(ymax-ymin), -ymin/(ymax-ymin)]])
 
+        """ 2.Create and compile shader code"""
         vsrc = """#version 130
             in vec2 p_ref;        // p_ref = [x, y]
             in float pcolor;
             uniform mat3 H;
-            const mat3x2 map0 = mat3x2( %(map0)s );
-            const mat3x2 map1 = mat3x2( %(map1)s );
-            uniform sampler2D im;
+            uniform sampler2D im_cur;
+
             out float c;
 
             const float width = %(width)d-1, height = %(height)d-1;
-
             bool isInImage(vec2 p)
             {    return p.x>0 && p.x<width && p.y>0 && p.y<height;  }   // 1 pixel border gap
 
+            const mat3x2 mapNDC = mat3x2( %(mapNDC)s );
             vec2 toNDC(vec2 p)
-            {   return map0*vec3(p,1); }    // map from [0:h,0:w] to [-1:1,-1:1]
+            {   return mapNDC*vec3(p,1); }    // map from [0:h,0:w] to [-1:1,-1:1]
 
+            const mat3x2 mapTEX = mat3x2( %(mapTEX)s );
             vec2 toTEX(vec2 p)
-            {   return map1*vec3(p,1); }    // map from [0:h,0:w] to [0:1,0:1]
+            {   return mapTEX*vec3(p,1); }    // map from [0:h,0:w] to [0:1,0:1]
 
             void main(void)
             {
@@ -94,19 +92,17 @@ class GLWidget(QtOpenGL.QGLWidget):
                 vec2 tc = p_cur.xy / p_cur.z;
                 bool isValid = isInImage(tc);
                 if(isValid)
-                    c = abs(pcolor - texture2D(im, toTEX(tc)).r );
+                    c = abs(pcolor - texture2D(im_cur, toTEX(tc)).r );
                 else
                     c = pcolor;
                 gl_Position.xy = toNDC(p_ref);
                 gl_Position.zw = vec2(0,1);
 
-            }""" % {"map0": "".join(str(v)+"," for v in map0.ravel('F'))[:-1],
-                    "map1": "".join(str(v)+"," for v in map1.ravel('F'))[:-1],
-                    "width": imwidth,
-                    "height": imheight }
-
+            }""" % {"mapNDC": "".join(str(v)+"," for v in mapNDC.ravel('F'))[:-1],
+                    "mapTEX": "".join(str(v)+"," for v in mapTEX.ravel('F'))[:-1],
+                    "width": width,
+                    "height": height }
         vertex = shaders.compileShader(vsrc, GL_VERTEX_SHADER)
-
         fragment = shaders.compileShader("""#version 130
             in float c;
             out vec4 color;
@@ -114,65 +110,123 @@ class GLWidget(QtOpenGL.QGLWidget):
             {
                 color.rgb = vec3( c);
             }""",GL_FRAGMENT_SHADER)
+        shader = shaders.compileProgram(vertex,fragment)
+        self.__shader = shader
 
-        self.shader = shaders.compileProgram(vertex,fragment)
+        """ 3.Extract parameter locations"""
+        attr = {"p_ref" : glGetAttribLocation(shader, "p_ref"),
+                "color" : glGetAttribLocation(shader, "pcolor")}
+        unif = {"H"     : glGetUniformLocation(shader, "H")}
+        # set sampler in pos 0
+#        glUseProgram(shader)
+#        glUniform1i(glGetUniformLocation(shader, "im_cur"), 0)
+#        glUseProgram(0)
 
-        self.p_ref_loc = glGetAttribLocation(self.shader, 'p_ref')
-        self.color_loc = glGetAttribLocation(self.shader, 'pcolor')
+        """ 4.Create constant vbo for p_ref"""
+        y, x = np.mgrid[0:height, 0:width]
+        P = np.vstack([x.ravel(), y.ravel()]).T
+        P = np.ascontiguousarray(P, 'f')
+        p_ref_vbo = VBO(P, GL_STATIC_DRAW, GL_ARRAY_BUFFER)
+        self.__p_ref_vbo = p_ref_vbo
 
-        self.H_loc = glGetUniformLocation(self.shader, "H")
-        self.map0_loc = glGetUniformLocation(self.shader, "map0")
-        self.map1_loc = glGetUniformLocation(self.shader, "map1")
-        self.im_loc = glGetUniformLocation(self.shader, "im")
+        """ 5.Create mutable vbo for reference pixel data """
+        ref_im = np.ones((height,width), 'f')
+        color_vbo = VBO(ref_im, GL_STATIC_DRAW, GL_ARRAY_BUFFER)
+        self.isRefSetted = False
+        def setRefImage(image):
+            image = np.ascontiguousarray(image/255.0, 'f')
+            if len(image) != len(ref_im):
+                raise RuntimeError("image size does not match")
+            with color_vbo:
+                color_vbo.set_array(image)
+                color_vbo.copy_data()           # send data to gpu
+                self.isRefSetted = True
+        self.setRefImage = setRefImage
+        self.__color_vbo = color_vbo
 
-    def initGeometry(self):
-        """ setup image texture """
-        tex_data = np.ascontiguousarray(frames[-1]/255.0, 'f')
+        """ 6.Create texture array for cur image"""
+        im_cur_tex = glGenTextures(1)
+        self.isCurSetted = False
+        def setCurImage(image):
+            tex_data = np.ascontiguousarray(image, 'f')
+            if image.dtype == np.uint8:
+                tex_data /= 255.0
 
-        h,w = tex_data.shape[:2]
-        self.tex = glGenTextures(1)
-        glActiveTexture(GL_TEXTURE0)
-        glBindTexture(GL_TEXTURE_2D, self.tex)
-        glTexImage2D(GL_TEXTURE_2D, 0,
-                        GL_RED,
-                        w, h,
-                        0,GL_RED,GL_FLOAT,
-                        tex_data)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+            h,w = tex_data.shape[:2]
+            glActiveTexture(GL_TEXTURE0)
+            glBindTexture(GL_TEXTURE_2D, im_cur_tex)
+            glTexImage2D(GL_TEXTURE_2D,     # target
+                         0,                 # level
+                         GL_RED,            # number of color components in the texture
+                         w, h,              # width, height
+                         0,                 # border(must be 0)
+                         GL_RED,            # format of the pixel data, i.e. GL_RED, GL_RG, GL_RGB,
+                         GL_FLOAT,          # data type of the pixel data, i.e GL_UNSIGNED_BYTE, GL_FLOAT ...
+                         tex_data)          # data pointer
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+            glBindTexture(GL_TEXTURE_2D, 0)
+            self.isCurSetted = True
+        self.setCurImage = setCurImage
+        self.__im_cur_tex = im_cur_tex
 
-        """ """
-        y, x = np.mgrid[0:h, 0:w]
-        P = np.vstack([x.ravel(),y.ravel()])
-        P = np.ascontiguousarray(P.T, 'f')
-        self.p = VBO(P, GL_STATIC_DRAW, GL_ARRAY_BUFFER)
-        self.im = np.ascontiguousarray(frames[0]/255.0, 'f')
-        self.I = VBO(self.im, GL_STATIC_DRAW, GL_ARRAY_BUFFER)
+        """ 7.Create VAO configuration Macro """
+        vao = glGenVertexArrays(1)
+        glBindVertexArray(vao)
+        with p_ref_vbo:   # auto bind
+            glVertexAttribPointer(attr["p_ref"],   # index
+                                  2,                # number of components per vertex attribute
+                                  GL_FLOAT,         # type
+                                  GL_FALSE,         # normalized
+                                  0,                # stride, byte offset between consecutive vertex attributes
+                                  p_ref_vbo)        # *pointer
+            glEnableVertexAttribArray(attr["p_ref"])
 
-        """ (optional) setup VAO configuration Macro"""
-        self.vao = glGenVertexArrays(1)
-        glBindVertexArray(self.vao)
-        self.p.bind()
-        glVertexAttribPointer(self.p_ref_loc,   # index
-                              2,                # number of components per vertex attribute
-                              GL_FLOAT,         # type
-                              GL_FALSE,         # normalized
-                              0,                # stride, byte offset between consecutive vertex attributes
-                              self.p)           # *pointer
-        glEnableVertexAttribArray(self.p_ref_loc)
-
-        if self.color_loc!=-1:
-            self.I.bind()
-            glVertexAttribPointer(self.color_loc,
-                                  1,
-                                  GL_FLOAT,
-                                  GL_FALSE,
-                                  0,
-                                  self.I)
-            glEnableVertexAttribArray(self.color_loc)
-
-        glBindBuffer(GL_ARRAY_BUFFER, 0)
+        if attr["color"]!= -1:
+            with color_vbo:
+                glVertexAttribPointer(attr["color"], 1, GL_FLOAT, GL_FALSE, 0, color_vbo)
+                glEnableVertexAttribArray(attr["color"])
         glBindVertexArray(0)
+        self.__vao = vao
+
+        """ 8. The Draw Function"""
+        def draw(H):
+            if self.isCurSetted and self.isRefSetted:
+                glUseProgram(shader)
+
+                glUniformMatrix3fv(unif["H"], 1, GL_TRUE, H.astype('f')) # location,count,transpose,*value
+
+                glActiveTexture(GL_TEXTURE0)
+                glBindTexture(GL_TEXTURE_2D, im_cur_tex)
+                glBindVertexArray(vao)
+                with p_ref_vbo,color_vbo: # auto vbo bind
+                    glDrawArrays(GL_POINTS, 0, height*width)    # mode,first,count
+
+                glBindVertexArray(0)
+                glUseProgram(0)
+        self.draw = draw
+
+    def __delete__(self):
+        glUseProgram(0)
+
+        self.__p_ref_vbo.delete()
+        self.__color_vbo.delete()
+        glDeleteTextures(self.__im_cur_tex)
+        glDeleteVertexArrays(self.__vao)
+        glDeleteProgram(self.__shader)
+
+class GLWidget(QtOpenGL.QGLWidget):
+    def __init__(self, parent=None):
+        self.parent = parent
+        QtOpenGL.QGLWidget.__init__(self, parent)
+
+    def initializeGL(self):
+        self.qglClearColor(QtGui.QColor(0, 0,  0))
+        self.sweeper = PlaneSweeper(h,w)
+        self.sweeper.setCurImage(frames[-1])
+        self.sweeper.setRefImage(frames[0])
+
+        glViewport(0, 0, 640, 480)
 
         cGr = np.dot(np.linalg.inv(wGc[-1]), wGc[0])
         R,T = cGr[:3,:3], cGr[:3,3]
@@ -180,14 +234,6 @@ class GLWidget(QtOpenGL.QGLWidget):
         self.M2 = K.dot(T)
         self.d = 2.0
 
-    def initializeGL(self):
-        self.qglClearColor(QtGui.QColor(0, 0,  0))
-
-        glViewport(0, 0, 640, 480)
-        self.buildShaders()
-        self.initGeometry()
-
-        glEnable(GL_DEPTH_TEST)
 
     def resizeGL(self, width, height):
         if height == 0: height = 1
@@ -198,26 +244,7 @@ class GLWidget(QtOpenGL.QGLWidget):
 
         H = self.M1.copy()
         H[:, 2] += self.M2/self.d
-        try:
-            self.p.bind()
-            self.I.bind()
-            glUseProgram(self.shader)
-
-            glUniformMatrix3fv(self.H_loc, 1, GL_TRUE, H.astype('f')) # location,count,transpose,*value
-
-            glActiveTexture(GL_TEXTURE0)
-            glBindTexture(GL_TEXTURE_2D, self.tex)
-
-            glBindVertexArray(self.vao)
-            glDrawArrays(GL_POINTS, 0, imheight*imwidth)    # mode,first,count
-
-        finally:
-
-            glBindVertexArray(0)
-            glBindTexture(GL_TEXTURE_2D, 0)
-            self.p.unbind()
-            self.I.unbind()
-            glUseProgram(0)
+        self.sweeper.draw(H)
 
     def wheelEvent(self, e):
         # QtGui.QWheelEvent(e)
@@ -232,7 +259,7 @@ class MainWindow(QtGui.QMainWindow):
     def __init__(self):
         QtGui.QMainWindow.__init__(self)
 
-        self.resize(imwidth, imheight)
+        self.resize(w, h)
         self.setWindowTitle('GL Cube Test')
 
         self.initActions()
