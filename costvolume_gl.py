@@ -70,7 +70,7 @@ class PlaneSweeper():
             in vec2 p_ref;        // p_ref = [x, y]
             in float pcolor;
             uniform mat3 H;
-            uniform sampler2D im_cur;
+            uniform sampler2DArray im_cur;
 
             out float c;
 
@@ -92,7 +92,7 @@ class PlaneSweeper():
                 vec2 tc = p_cur.xy / p_cur.z;
                 bool isValid = isInImage(tc);
                 if(isValid) {
-                    c = abs(pcolor - texture2D(im_cur, toTEX(tc)).r );
+                    c = abs( pcolor-texture(im_cur, vec3(toTEX(tc), 0)).r );
                 }
                 else
                     c = pcolor;
@@ -138,6 +138,8 @@ class PlaneSweeper():
         def setRefImage(image):
             if image.dtype != np.uint8:
                 raise RuntimeError("image must be uint8")
+            if image.shape != (height,width):
+                raise RuntimeError("image size not matched")
             with color_vbo:
                 color_vbo.set_array(image)
                 color_vbo.copy_data()           # send data to gpu
@@ -146,26 +148,37 @@ class PlaneSweeper():
         self.__color_vbo = color_vbo
 
         """ 6.Create texture array for cur image"""
+        max_images = 10
         im_cur_tex = glGenTextures(1)
+#        glActiveTexture(GL_TEXTURE0)
+        glBindTexture(GL_TEXTURE_2D_ARRAY, im_cur_tex)
+        glTexStorage3D(GL_TEXTURE_2D_ARRAY,
+                       1,             # mip map levels
+                       GL_R8,         #
+                       width, height, # shape
+                       max_images)    # total num of layers/depth
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+        glBindTexture(GL_TEXTURE_2D_ARRAY, 0)
         self.isCurSetted = False
-        def setCurImage(image):
-            if image.dtype != np.uint8:
-                raise RuntimeError("image must be uint8")
-
-            h,w = image.shape[:2]
-            glActiveTexture(GL_TEXTURE0)
-            glBindTexture(GL_TEXTURE_2D, im_cur_tex)
-            glTexImage2D(GL_TEXTURE_2D,     # target
-                         0,                 # mid map level
-                         GL_RED,            # number of color components in the texture
-                         w, h,              # width, height
-                         0,                 # border(must be 0)
-                         GL_RED,            # format of the pixel data, i.e. GL_RED, GL_RG, GL_RGB,
-                         GL_UNSIGNED_BYTE,  # data type of the pixel data, i.e GL_UNSIGNED_BYTE, GL_FLOAT ...
-                         image)             # data pointer
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
-            glBindTexture(GL_TEXTURE_2D, 0)
+        def setCurImage(images):
+            if len(images) > max_images:
+                raise RuntimeWarning("More than 10 images")
+                images = images[:10]
+#            glActiveTexture(GL_TEXTURE0)
+            glBindTexture(GL_TEXTURE_2D_ARRAY, im_cur_tex)
+            for layer,image in enumerate(images):
+                if image.dtype != np.uint8:
+                    raise RuntimeError("image must be uint8")
+                if image.shape != (height,width):
+                    raise RuntimeError("image size not matched")
+                glTexSubImage3D(GL_TEXTURE_2D_ARRAY,    # target,
+                             0,0,0,layer,                   # mid map level, x/y/z-offset
+                             w, h, 1,               # width, height,layers
+                             GL_RED,            # format of the pixel data, i.e. GL_RED, GL_RG, GL_RGB,
+                             GL_UNSIGNED_BYTE,  # data type of the pixel data, i.e GL_UNSIGNED_BYTE, GL_FLOAT ...
+                             image)             # data pointer
+            glBindTexture(GL_TEXTURE_2D_ARRAY, 0)
             self.isCurSetted = True
         self.setCurImage = setCurImage
         self.__im_cur_tex = im_cur_tex
@@ -203,7 +216,7 @@ class PlaneSweeper():
                 glUniformMatrix3fv(unif["H"], 1, GL_TRUE, H.astype('f')) # location,count,transpose,*value
 
                 glActiveTexture(GL_TEXTURE0)
-                glBindTexture(GL_TEXTURE_2D, im_cur_tex)
+                glBindTexture(GL_TEXTURE_2D_ARRAY, im_cur_tex)
                 glBindVertexArray(vao)
                 with p_ref_vbo,color_vbo: # auto vbo bind
                     glDrawArrays(GL_POINTS, 0, height*width)    # mode,first,count
@@ -226,19 +239,19 @@ class GLWidget(QtOpenGL.QGLWidget):
         self.parent = parent
         QtOpenGL.QGLWidget.__init__(self, parent)
 
-    def initializeGL(self):
-        self.qglClearColor(QtGui.QColor(0, 0,  0))
-        self.sweeper = PlaneSweeper(h,w)
-        self.sweeper.setCurImage(frames[-1])
-        self.sweeper.setRefImage(frames[0])
-
-        glViewport(0, 0, 640, 480)
-
         cGr = np.dot(np.linalg.inv(wGc[-1]), wGc[0])
         R,T = cGr[:3,:3], cGr[:3,3]
         self.M1 = K.dot(R).dot(inv(K))
         self.M2 = K.dot(T)
         self.d = 2.0
+
+    def initializeGL(self):
+        self.qglClearColor(QtGui.QColor(0, 0,  0))
+        self.sweeper = PlaneSweeper(h,w)
+        self.sweeper.setCurImage([frames[-1]])
+        self.sweeper.setRefImage(frames[0])
+
+        glViewport(0, 0, 640, 480)
 
 
     def resizeGL(self, width, height):
