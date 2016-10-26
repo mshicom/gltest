@@ -58,7 +58,6 @@ class GLWidget(QtOpenGL.QGLWidget):
         self.parent = parent
         QtOpenGL.QGLWidget.__init__(self, parent)
 
-
     def buildShaders(self):
         imheight,imwidth = frames[0].shape[:2]
 
@@ -69,7 +68,7 @@ class GLWidget(QtOpenGL.QGLWidget):
         map1 = np.array([[1/(B-A),   0, -A/(B-A)],
                          [0,   1/(D-C), -C/(D-C)]])
 
-        vertex = shaders.compileShader("""#version 130
+        vsrc = """#version 130
             in vec2 p_ref;        // p_ref = [x, y]
             in float pcolor;
             uniform mat3 H;
@@ -78,23 +77,35 @@ class GLWidget(QtOpenGL.QGLWidget):
             uniform sampler2D im;
             out float c;
 
-            const float width = 640-1, height = 480-1;
+            const float width = %(width)d-1, height = %(height)d-1;
 
             bool isInImage(vec2 p)
-            {    return p.x>0 && p.x<width && p.y>0 && p.y<height;  }
+            {    return p.x>0 && p.x<width && p.y>0 && p.y<height;  }   // 1 pixel border gap
+
+            vec2 toNDC(vec2 p)
+            {   return map0*vec3(p,1); }    // map from [0:h,0:w] to [-1:1,-1:1]
+
+            vec2 toTEX(vec2 p)
+            {   return map1*vec3(p,1); }    // map from [0:h,0:w] to [0:1,0:1]
 
             void main(void)
             {
-                vec3 p_cur = H*vec3(p_ref, 1);      // := K*R*inv(K)*p_ref+K*T/d
+                vec3 p_cur = H*vec3(p_ref,1);      // := K*R*inv(K)*p_ref+K*T/d
                 vec2 tc = p_cur.xy / p_cur.z;
-                if(isInImage(tc))
-                    c = abs(pcolor - texture2D(im, map1*vec3(tc,1)).r );
+                bool isValid = isInImage(tc);
+                if(isValid)
+                    c = abs(pcolor - texture2D(im, toTEX(tc)).r );
                 else
                     c = pcolor;
-                gl_Position.xy = map0*vec3(p_ref,1);
+                gl_Position.xy = toNDC(p_ref);
+                gl_Position.zw = vec2(0,1);
 
             }""" % {"map0": "".join(str(v)+"," for v in map0.ravel('F'))[:-1],
-                    "map1": "".join(str(v)+"," for v in map1.ravel('F'))[:-1]}, GL_VERTEX_SHADER)
+                    "map1": "".join(str(v)+"," for v in map1.ravel('F'))[:-1],
+                    "width": imwidth,
+                    "height": imheight }
+
+        vertex = shaders.compileShader(vsrc, GL_VERTEX_SHADER)
 
         fragment = shaders.compileShader("""#version 130
             in float c;
@@ -142,11 +153,24 @@ class GLWidget(QtOpenGL.QGLWidget):
         self.vao = glGenVertexArrays(1)
         glBindVertexArray(self.vao)
         self.p.bind()
-        glVertexAttribPointer(self.p_ref_loc, 2, GL_FLOAT, GL_FALSE, 0, self.p)
+        glVertexAttribPointer(self.p_ref_loc,   # index
+                              2,                # number of components per vertex attribute
+                              GL_FLOAT,         # type
+                              GL_FALSE,         # normalized
+                              0,                # stride, byte offset between consecutive vertex attributes
+                              self.p)           # *pointer
         glEnableVertexAttribArray(self.p_ref_loc)
-        self.I.bind()
-        glVertexAttribPointer(self.color_loc, 1, GL_FLOAT, GL_FALSE, 0, self.I)
-        glEnableVertexAttribArray(self.color_loc)
+
+        if self.color_loc!=-1:
+            self.I.bind()
+            glVertexAttribPointer(self.color_loc,
+                                  1,
+                                  GL_FLOAT,
+                                  GL_FALSE,
+                                  0,
+                                  self.I)
+            glEnableVertexAttribArray(self.color_loc)
+
         glBindBuffer(GL_ARRAY_BUFFER, 0)
         glBindVertexArray(0)
 
@@ -179,18 +203,18 @@ class GLWidget(QtOpenGL.QGLWidget):
             self.I.bind()
             glUseProgram(self.shader)
 
-            glUniformMatrix3fv(self.H_loc, 1, GL_TRUE, H.astype('f'))
+            glUniformMatrix3fv(self.H_loc, 1, GL_TRUE, H.astype('f')) # location,count,transpose,*value
 
             glActiveTexture(GL_TEXTURE0)
             glBindTexture(GL_TEXTURE_2D, self.tex)
 
             glBindVertexArray(self.vao)
             glDrawArrays(GL_POINTS, 0, imheight*imwidth)    # mode,first,count
-            glBindVertexArray(0)
-
-            glBindTexture(GL_TEXTURE_2D, 0)
 
         finally:
+
+            glBindVertexArray(0)
+            glBindTexture(GL_TEXTURE_2D, 0)
             self.p.unbind()
             self.I.unbind()
             glUseProgram(0)
