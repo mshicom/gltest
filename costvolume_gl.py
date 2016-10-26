@@ -15,16 +15,9 @@ from OpenGLContext.quaternion import  fromEuler
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy.io
-
+from tools import *
 #%%
-def loaddata1():
-    data = scipy.io.loadmat('data.mat')
-    frames, = data['I']
-    G, = data['G']
-    K = data['K']
-    Z, = data['Z']/100.0
-    return frames, G, K, Z
-frames, G, K, Z = loaddata1()
+frames, wGc, K, Z = loaddata1()
 imheight,imwidth = frames[0].shape[:2]
 
 fx,fy,cx,cy = K[0,0],K[1,1],K[0,2],K[1,2]
@@ -60,13 +53,6 @@ class FBO_Test():
         # 4. Done & de-activate it
         glBindFramebuffer(GL_FRAMEBUFFER, 0)
 
-def backproject(x, y, K):
-    ''' return 3xN backprojected points array, x,y,z = p[0],p[1],p[2]'''
-    fx,fy,cx,cy = K[0,0],K[1,1],K[0,2],K[1,2]
-    x,y = np.atleast_1d(x,y)   # scalar to array
-    x,y = x.ravel(), y.ravel()
-    return np.vstack([(x-cx)/fx, (y-cy)/fy, np.ones_like(x)])
-
 class GLWidget(QtOpenGL.QGLWidget):
     def __init__(self, parent=None):
         self.parent = parent
@@ -75,9 +61,7 @@ class GLWidget(QtOpenGL.QGLWidget):
 
     def buildShaders(self):
         imheight,imwidth = frames[0].shape[:2]
-        fx,fy,cx,cy = K[0,0],K[1,1],K[0,2],K[1,2]
 
-#        A,B,C,D = -cx/fx, (imwidth-1-cx)/fx, -cy/fy, (imheight-1-cy)/fy
         A,B,C,D = 0., imwidth-1., 0., imheight-1.
         map0 = np.array([[2/(A-B),   0, 1-2*A/(A-B)],
                          [0,   2/(C-D), 1-2*C/(C-D)]])
@@ -132,7 +116,7 @@ class GLWidget(QtOpenGL.QGLWidget):
 
     def initGeometry(self):
         """ setup image texture """
-        tex_data = np.ascontiguousarray(frames[1]/255.0, 'f')
+        tex_data = np.ascontiguousarray(frames[-1]/255.0, 'f')
 
         h,w = tex_data.shape[:2]
         self.tex = glGenTextures(1)
@@ -166,6 +150,11 @@ class GLWidget(QtOpenGL.QGLWidget):
         glBindBuffer(GL_ARRAY_BUFFER, 0)
         glBindVertexArray(0)
 
+        cGr = np.dot(np.linalg.inv(wGc[-1]), wGc[0])
+        R,T = cGr[:3,:3], cGr[:3,3]
+        self.M1 = K.dot(R).dot(inv(K))
+        self.M2 = K.dot(T)
+        self.d = 2.0
 
     def initializeGL(self):
         self.qglClearColor(QtGui.QColor(0, 0,  0))
@@ -183,12 +172,14 @@ class GLWidget(QtOpenGL.QGLWidget):
     def paintGL(self):
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
+        H = self.M1.copy()
+        H[:, 2] += self.M2/self.d
         try:
             self.p.bind()
             self.I.bind()
             glUseProgram(self.shader)
 
-            glUniformMatrix3fv(self.H_loc, 1, GL_TRUE, np.eye(3,dtype='f'))
+            glUniformMatrix3fv(self.H_loc, 1, GL_TRUE, H.astype('f'))
 
             glActiveTexture(GL_TEXTURE0)
             glBindTexture(GL_TEXTURE_2D, self.tex)
@@ -203,6 +194,14 @@ class GLWidget(QtOpenGL.QGLWidget):
             self.p.unbind()
             self.I.unbind()
             glUseProgram(0)
+
+    def wheelEvent(self, e):
+        # QtGui.QWheelEvent(e)
+        """ zoom in """
+        inc = 0.2 if e.delta()>0 else -0.2
+        self.d = np.clip(self.d+inc, 0.1, 5.0)
+        print self.d
+        self.updateGL()
 
 class MainWindow(QtGui.QMainWindow):
 
