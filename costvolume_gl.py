@@ -91,8 +91,9 @@ class PlaneSweeper():
                 vec3 p_cur = H*vec3(p_ref,1);      // := K*R*inv(K)*p_ref+K*T/d
                 vec2 tc = p_cur.xy / p_cur.z;
                 bool isValid = isInImage(tc);
-                if(isValid)
+                if(isValid) {
                     c = abs(pcolor - texture2D(im_cur, toTEX(tc)).r );
+                }
                 else
                     c = pcolor;
                 gl_Position.xy = toNDC(p_ref);
@@ -108,8 +109,9 @@ class PlaneSweeper():
             out vec4 color;
             void main(void)
             {
-                color.rgb = vec3( c);
-            }""",GL_FRAGMENT_SHADER)
+                color.rgb = vec3(c);
+            }
+            """,GL_FRAGMENT_SHADER)
         shader = shaders.compileProgram(vertex,fragment)
         self.__shader = shader
 
@@ -118,9 +120,9 @@ class PlaneSweeper():
                 "color" : glGetAttribLocation(shader, "pcolor")}
         unif = {"H"     : glGetUniformLocation(shader, "H")}
         # set sampler in pos 0
-#        glUseProgram(shader)
-#        glUniform1i(glGetUniformLocation(shader, "im_cur"), 0)
-#        glUseProgram(0)
+        glUseProgram(shader)
+        glUniform1i(glGetUniformLocation(shader, "im_cur"), 0)
+        glUseProgram(0)
 
         """ 4.Create constant vbo for p_ref"""
         y, x = np.mgrid[0:height, 0:width]
@@ -130,13 +132,12 @@ class PlaneSweeper():
         self.__p_ref_vbo = p_ref_vbo
 
         """ 5.Create mutable vbo for reference pixel data """
-        ref_im = np.ones((height,width), 'f')
+        ref_im = np.ones((height,width), 'uint8')
         color_vbo = VBO(ref_im, GL_STATIC_DRAW, GL_ARRAY_BUFFER)
         self.isRefSetted = False
         def setRefImage(image):
-            image = np.ascontiguousarray(image/255.0, 'f')
-            if len(image) != len(ref_im):
-                raise RuntimeError("image size does not match")
+            if image.dtype != np.uint8:
+                raise RuntimeError("image must be uint8")
             with color_vbo:
                 color_vbo.set_array(image)
                 color_vbo.copy_data()           # send data to gpu
@@ -148,21 +149,20 @@ class PlaneSweeper():
         im_cur_tex = glGenTextures(1)
         self.isCurSetted = False
         def setCurImage(image):
-            tex_data = np.ascontiguousarray(image, 'f')
-            if image.dtype == np.uint8:
-                tex_data /= 255.0
+            if image.dtype != np.uint8:
+                raise RuntimeError("image must be uint8")
 
-            h,w = tex_data.shape[:2]
+            h,w = image.shape[:2]
             glActiveTexture(GL_TEXTURE0)
             glBindTexture(GL_TEXTURE_2D, im_cur_tex)
             glTexImage2D(GL_TEXTURE_2D,     # target
-                         0,                 # level
+                         0,                 # mid map level
                          GL_RED,            # number of color components in the texture
                          w, h,              # width, height
                          0,                 # border(must be 0)
                          GL_RED,            # format of the pixel data, i.e. GL_RED, GL_RG, GL_RGB,
-                         GL_FLOAT,          # data type of the pixel data, i.e GL_UNSIGNED_BYTE, GL_FLOAT ...
-                         tex_data)          # data pointer
+                         GL_UNSIGNED_BYTE,  # data type of the pixel data, i.e GL_UNSIGNED_BYTE, GL_FLOAT ...
+                         image)             # data pointer
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
             glBindTexture(GL_TEXTURE_2D, 0)
@@ -177,19 +177,25 @@ class PlaneSweeper():
             glVertexAttribPointer(attr["p_ref"],   # index
                                   2,                # number of components per vertex attribute
                                   GL_FLOAT,         # type
-                                  GL_FALSE,         # normalized
+                                  GL_FALSE,         # whether to normalize it to float or not
                                   0,                # stride, byte offset between consecutive vertex attributes
                                   p_ref_vbo)        # *pointer
             glEnableVertexAttribArray(attr["p_ref"])
 
         if attr["color"]!= -1:
             with color_vbo:
-                glVertexAttribPointer(attr["color"], 1, GL_FLOAT, GL_FALSE, 0, color_vbo)
+                glVertexAttribPointer(attr["color"],
+                                      1,
+                                      GL_UNSIGNED_BYTE,
+                                      GL_TRUE,          # convert them to float when loaded in shader
+                                      0,
+                                      color_vbo)
                 glEnableVertexAttribArray(attr["color"])
         glBindVertexArray(0)
         self.__vao = vao
 
         """ 8. The Draw Function"""
+#        @timing
         def draw(H):
             if self.isCurSetted and self.isRefSetted:
                 glUseProgram(shader)
