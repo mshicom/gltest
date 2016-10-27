@@ -17,9 +17,10 @@ import matplotlib.pyplot as plt
 import scipy.io
 from tools import *
 #%%
-frames, wGc, K, Z = loaddata1()
+#frames, wGc, K, Z = loaddata1()
+from orb_kfs import  loaddata4
+frames, wGc, K, Z = loaddata4(60)
 h,w = frames[0].shape[:2]
-
 fx,fy,cx,cy = K[0,0],K[1,1],K[0,2],K[1,2]
 
 #%%
@@ -72,7 +73,6 @@ class PlaneSweeper():
 
             uniform mat3 R[%(max_images)d];
             uniform vec3 t[%(max_images)d];
-            uniform mat3 M[%(max_images)d];
             uniform int im_cnt;
             uniform sampler2DArray im_cur;
             uniform float idepth;
@@ -140,11 +140,10 @@ class PlaneSweeper():
         unif = {"R"     : glGetUniformLocation(shader, "R"),
                 "t"     : glGetUniformLocation(shader, "t"),
                 "im_cnt": glGetUniformLocation(shader, "im_cnt"),
-                "idepth": glGetUniformLocation(shader, "idepth"),
-                "M"     : glGetUniformLocation(shader, "M"),}
+                "idepth": glGetUniformLocation(shader, "idepth")}
 
         def setCurImagePos(cGr, K):
-            if isinstance(cGr,ndarray):
+            if isinstance(cGr,np.ndarray):
                 cGr = [cGr]
             N = len(cGr)
             if N>max_images:
@@ -210,7 +209,7 @@ class PlaneSweeper():
         self.isCurSetted = False
         @timing
         def setCurImage(images):
-            if isinstance(images,ndarray):
+            if isinstance(images,np.ndarray):
                 images = [images]
             if len(images) > max_images:
                 raise RuntimeWarning("More than 10 images")
@@ -273,6 +272,15 @@ class PlaneSweeper():
                 glUseProgram(0)
         self.draw = draw
 
+        def getResult(res = np.empty((height,width),'f')):
+            glReadPixels(0,  0,              # window coordinates of the first pixel
+                         width,height,       # dimensions of the pixel rectangle
+                         GL_RED,             # format
+                         GL_FLOAT,           #	 data type,
+                         res)
+            return res
+        self.getResult = getResult
+
     def __delete__(self):
         glUseProgram(0)
 
@@ -294,8 +302,8 @@ class GLWidget(QtOpenGL.QGLWidget):
         cGr = [inv(G).dot(wGc[0]) for G in wGc]
         self.sweeper = PlaneSweeper(h,w)
         self.sweeper.setRefImage(frames[0])
-        self.sweeper.setCurImage(frames[1:])
-        self.sweeper.setCurImagePos(cGr[1:], K)
+        self.sweeper.setCurImage(frames[1:2])
+        self.sweeper.setCurImagePos(cGr[1:2], K)
 
         glViewport(0, 0, 640, 480)
 
@@ -314,7 +322,7 @@ class GLWidget(QtOpenGL.QGLWidget):
         """ zoom in """
         inc = 0.2 if e.delta()>0 else -0.2
         self.d = np.clip(self.d+inc, 0.1, 5.0)
-#        print self.d
+        print self.d
         self.updateGL()
 
 class MainWindow(QtGui.QMainWindow):
