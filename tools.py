@@ -25,7 +25,7 @@ def loaddata1():
     G, = data['G']
     K = data['K']
     Z, = data['Z']/100.0
-    return frames, G, K, Z
+    return frames.tolist(), G.tolist(), K, Z.tolist()
 
 def loaddata2():
     with np.load("kfrecord.npz") as data:

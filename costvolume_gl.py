@@ -55,7 +55,7 @@ class FBO_Test():
 
 
 class PlaneSweeper():
-    def __init__(self, height, width):
+    def __init__(self, height, width, max_images = 10):
         """ 1.Calculate NDC/Texture mapping matrix"""
         xmin,xmax,ymin,ymax = 0.0, width-1.0, 0.0, height-1.0
 
@@ -67,11 +67,15 @@ class PlaneSweeper():
 
         """ 2.Create and compile shader code"""
         vsrc = """#version 130
-            in vec2 p_ref;        // p_ref = [x, y]
+            in vec2 p_ref;        // [x, y]
             in float pcolor;
-            uniform mat3 H;
-            uniform sampler2DArray im_cur;
 
+            uniform mat3 R[%(max_images)d];
+            uniform vec3 t[%(max_images)d];
+            uniform mat3 M[%(max_images)d];
+            uniform int im_cnt;
+            uniform sampler2DArray im_cur;
+            uniform float idepth;
             out float c;
 
             const float width = %(width)d-1, height = %(height)d-1;
@@ -88,21 +92,36 @@ class PlaneSweeper():
 
             void main(void)
             {
-                vec3 p_cur = H*vec3(p_ref,1);      // := K*R*inv(K)*p_ref+K*T/d
-                vec2 tc = p_cur.xy / p_cur.z;
-                bool isValid = isInImage(tc);
-                if(isValid) {
-                    c = abs( pcolor-texture(im_cur, vec3(toTEX(tc), 0)).r );
-                }
-                else
+                float err_sum = 0;
+                int valid_cnt = 0;
+                int i;
+                for(i=0; i<im_cnt; ++i)
+                {
+                    mat3 H = R[i];
+                    H[2] += t[i]*idepth;
+
+                    vec3 p_cur = H*vec3(p_ref, 1);
+                    vec2 tc = p_cur.xy / p_cur.z;
+                    bool isValid = isInImage(tc);
+                    if(isValid) {
+                        ++valid_cnt;
+                        err_sum += abs( pcolor-texture(im_cur, vec3(toTEX(tc), i)).r );
+                    }
+                 }
+
+                 if(valid_cnt>0)
+                    c = err_sum/valid_cnt;
+                 else
                     c = pcolor;
+
                 gl_Position.xy = toNDC(p_ref);
                 gl_Position.zw = vec2(0,1);
-
             }""" % {"mapNDC": "".join(str(v)+"," for v in mapNDC.ravel('F'))[:-1],
                     "mapTEX": "".join(str(v)+"," for v in mapTEX.ravel('F'))[:-1],
                     "width": width,
-                    "height": height }
+                    "height": height,
+                    "max_images":max_images}
+
         vertex = shaders.compileShader(vsrc, GL_VERTEX_SHADER)
         fragment = shaders.compileShader("""#version 130
             in float c;
@@ -118,7 +137,36 @@ class PlaneSweeper():
         """ 3.Extract parameter locations"""
         attr = {"p_ref" : glGetAttribLocation(shader, "p_ref"),
                 "color" : glGetAttribLocation(shader, "pcolor")}
-        unif = {"H"     : glGetUniformLocation(shader, "H")}
+        unif = {"R"     : glGetUniformLocation(shader, "R"),
+                "t"     : glGetUniformLocation(shader, "t"),
+                "im_cnt": glGetUniformLocation(shader, "im_cnt"),
+                "idepth": glGetUniformLocation(shader, "idepth"),
+                "M"     : glGetUniformLocation(shader, "M"),}
+
+        def setCurImagePos(cGr, K):
+            if isinstance(cGr,ndarray):
+                cGr = [cGr]
+            N = len(cGr)
+            if N>max_images:
+                raise RuntimeWarning("Too many matrix")
+                cGr = cGr[:max_images]
+
+            invK = inv(K)
+            Rs = [ K.dot(G[:3,:3]).dot(invK) for G in cGr]
+            ts = [ K.dot(G[:3,3])            for G in cGr]
+            #Ms = np.vstack([ R+vec(t).dot(np.array([[0,0,idepth]]))  for R,t in zip(Rs,ts)])
+
+            glUseProgram(shader)
+            glUniformMatrix3fv(unif["R"], N, GL_TRUE, np.vstack(Rs).astype('f')) # location,count,transpose,*value
+            glUniform3fv(unif["t"], N, np.vstack(ts).astype('f'))
+            glUniform1i(unif["im_cnt"], N)
+            glUseProgram(0)
+        self.setCurImagePos = setCurImagePos
+
+        def setTargetDepth(idepth):
+            glProgramUniform1f(shader, unif["idepth"], idepth.astype('f'))
+        self.setTargetDepth = setTargetDepth
+
         # set sampler in pos 0
         glUseProgram(shader)
         glUniform1i(glGetUniformLocation(shader, "im_cur"), 0)
@@ -148,7 +196,6 @@ class PlaneSweeper():
         self.__color_vbo = color_vbo
 
         """ 6.Create texture array for cur image"""
-        max_images = 10
         im_cur_tex = glGenTextures(1)
 #        glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_2D_ARRAY, im_cur_tex)
@@ -161,10 +208,13 @@ class PlaneSweeper():
         glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
         glBindTexture(GL_TEXTURE_2D_ARRAY, 0)
         self.isCurSetted = False
+        @timing
         def setCurImage(images):
+            if isinstance(images,ndarray):
+                images = [images]
             if len(images) > max_images:
                 raise RuntimeWarning("More than 10 images")
-                images = images[:10]
+                images = images[:max_images]
 #            glActiveTexture(GL_TEXTURE0)
             glBindTexture(GL_TEXTURE_2D_ARRAY, im_cur_tex)
             for layer,image in enumerate(images):
@@ -208,12 +258,10 @@ class PlaneSweeper():
         self.__vao = vao
 
         """ 8. The Draw Function"""
-#        @timing
-        def draw(H):
+        @timing
+        def draw():
             if self.isCurSetted and self.isRefSetted:
                 glUseProgram(shader)
-
-                glUniformMatrix3fv(unif["H"], 1, GL_TRUE, H.astype('f')) # location,count,transpose,*value
 
                 glActiveTexture(GL_TEXTURE0)
                 glBindTexture(GL_TEXTURE_2D_ARRAY, im_cur_tex)
@@ -239,20 +287,17 @@ class GLWidget(QtOpenGL.QGLWidget):
         self.parent = parent
         QtOpenGL.QGLWidget.__init__(self, parent)
 
-        cGr = np.dot(np.linalg.inv(wGc[-1]), wGc[0])
-        R,T = cGr[:3,:3], cGr[:3,3]
-        self.M1 = K.dot(R).dot(inv(K))
-        self.M2 = K.dot(T)
         self.d = 2.0
 
     def initializeGL(self):
         self.qglClearColor(QtGui.QColor(0, 0,  0))
+        cGr = [inv(G).dot(wGc[0]) for G in wGc]
         self.sweeper = PlaneSweeper(h,w)
-        self.sweeper.setCurImage([frames[-1]])
         self.sweeper.setRefImage(frames[0])
+        self.sweeper.setCurImage(frames[1:])
+        self.sweeper.setCurImagePos(cGr[1:], K)
 
         glViewport(0, 0, 640, 480)
-
 
     def resizeGL(self, width, height):
         if height == 0: height = 1
@@ -261,16 +306,15 @@ class GLWidget(QtOpenGL.QGLWidget):
     def paintGL(self):
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
-        H = self.M1.copy()
-        H[:, 2] += self.M2/self.d
-        self.sweeper.draw(H)
+        self.sweeper.setTargetDepth(1/self.d)
+        self.sweeper.draw()
 
     def wheelEvent(self, e):
         # QtGui.QWheelEvent(e)
         """ zoom in """
         inc = 0.2 if e.delta()>0 else -0.2
         self.d = np.clip(self.d+inc, 0.1, 5.0)
-        print self.d
+#        print self.d
         self.updateGL()
 
 class MainWindow(QtGui.QMainWindow):
