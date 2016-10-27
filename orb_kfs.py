@@ -74,7 +74,7 @@ def dataFromOrb():
         frames = [ image_set[key] for key in keys]
         cGw = [record['Tcw']] + [nbr['Tcw'] for nbr in record['Neighbors']]
         wGc = [np.linalg.inv(g) for g in cGw]
-        return frames, wGc, K
+        return frames, wGc, K,None
     return getData
 loaddata4 = dataFromOrb()
 

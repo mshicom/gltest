@@ -230,6 +230,43 @@ class PlaneSweeper():
             glBindTexture(GL_TEXTURE_2D_ARRAY, 0)
             self.isCurSetted = True
         self.setCurImage = setCurImage
+        @timing
+        def setCurImagePBO(images):
+            if isinstance(images,np.ndarray):
+                images = [images]
+            if len(images) > max_images:
+                raise RuntimeWarning("More than 10 images")
+                images = images[:max_images]
+
+            imsize = width*height
+            imcnt = len(images)
+            glBindTexture(GL_TEXTURE_2D_ARRAY, im_cur_tex)
+            # create pbo
+            pbo = glGenBuffers(1)
+            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo)
+            glBufferData(GL_PIXEL_UNPACK_BUFFER, imsize*imcnt, None, GL_STREAM_READ) # allocate space
+            # copy data to it (cpu side)
+            for layer,image in enumerate(images):
+                if image.dtype != np.uint8:
+                    raise RuntimeError("image must be uint8")
+                if image.shape != (height,width):
+                    raise RuntimeError("image size not matched")
+                glBufferSubData(GL_PIXEL_UNPACK_BUFFER,
+                                layer*imsize,     # offset
+                                imsize,           # size
+                                image)
+            # now issue the transfer order (from CPU to GPU by DMA in the backgroung)
+            glTexSubImage3D(GL_TEXTURE_2D_ARRAY,    # target,
+                             0,0,0,0,           # mid map level, x/y/z-offset
+                             w, h, imcnt,               # width, height,layers
+                             GL_RED,            # format of the pixel data, i.e. GL_RED, GL_RG, GL_RGB,
+                             GL_UNSIGNED_BYTE,  # data type of the pixel data, i.e GL_UNSIGNED_BYTE, GL_FLOAT ...
+                             None)             # data pointer
+            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0)
+            glDeleteBuffers(1, [pbo])
+            self.isCurSetted = True
+        self.setCurImagePBO = setCurImagePBO
+
         self.__im_cur_tex = im_cur_tex
 
         """ 7.Create VAO configuration Macro """
@@ -302,8 +339,8 @@ class GLWidget(QtOpenGL.QGLWidget):
         cGr = [inv(G).dot(wGc[0]) for G in wGc]
         self.sweeper = PlaneSweeper(h,w)
         self.sweeper.setRefImage(frames[0])
-        self.sweeper.setCurImage(frames[1:2])
-        self.sweeper.setCurImagePos(cGr[1:2], K)
+        self.sweeper.setCurImagePBO(frames[1:])
+        self.sweeper.setCurImagePos(cGr[1:], K)
 
         glViewport(0, 0, 640, 480)
 
@@ -320,8 +357,13 @@ class GLWidget(QtOpenGL.QGLWidget):
     def wheelEvent(self, e):
         # QtGui.QWheelEvent(e)
         """ zoom in """
-        inc = 0.2 if e.delta()>0 else -0.2
-        self.d = np.clip(self.d+inc, 0.1, 5.0)
+        sign = np.sign(e.delta())
+        if self.d < 1:
+            inc = 0.02*sign
+        else:
+            inc = 0.2*sign
+
+        self.d = np.clip(self.d+inc, 0.01, 8.0)
         print self.d
         self.updateGL()
 
