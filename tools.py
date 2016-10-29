@@ -125,7 +125,7 @@ class IndexTracker(object):
 
         self.im = ax.imshow(self.X[self.ind])
         self.update()
-        fig.canvas.mpl_connect('scroll_event', self.onscroll)
+        ax.get_figure().canvas.mpl_connect('scroll_event', self.onscroll)
 
     def onscroll(self, event):
         #print("%s %s" % (event.button, event.step))

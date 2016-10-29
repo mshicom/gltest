@@ -17,51 +17,87 @@ import matplotlib.pyplot as plt
 import scipy.io
 from tools import *
 #%%
-#frames, wGc, K, Z = loaddata1()
-from orb_kfs import  loaddata4
-frames, wGc, K, Z = loaddata4(60)
+frames, wGc, K, Z = loaddata1()
+#from orb_kfs import  loaddata4
+#frames, wGc, K, Z = loaddata4(60)
 h,w = frames[0].shape[:2]
 fx,fy,cx,cy = K[0,0],K[1,1],K[0,2],K[1,2]
 
 #%%
-class FBO_Test():
-    def __init__():
-        self.drawbuffer = []
+from OpenGL.GL import *
+from OpenGL import GLX
+from OpenGL.raw.GLX._types import struct__XDisplay
+from ctypes import *
+import Xlib
+import Xlib.display
+class OffScreenGL:
+    """ these method do not seem to exist in python x11 library lets exploit the c methods """
+    xlib = cdll.LoadLibrary('libX11.so')
+    xlib.XOpenDisplay.argtypes = [c_char_p]
+    xlib.XOpenDisplay.restype = POINTER(struct__XDisplay)
+    xdisplay = xlib.XOpenDisplay("")
+    display = Xlib.display.Display()
 
-    def generateColorTexture(width, height):
-        pass
+    def __init__(self, width, height):
+        """ lets setup are opengl settings and create the context for our window """
+        def cAttrs(aList):
+            aList += [0]
+            return (c_int * len(aList))(*aList)
 
-    def GenerateFBO(self, width, height):
+        xvinfo = GLX.glXChooseVisual(self.xdisplay,
+                                     self.display.get_default_screen(),
+                                     cAttrs([GLX.GLX_RGBA,          1,
+#                                             GLX.GLX_RED_SIZE,      1,
+#                                             GLX.GLX_GREEN_SIZE,    1,
+#                                             GLX.GLX_BLUE_SIZE,     1,
+                                             GLX.GLX_DOUBLEBUFFER,  0]))
+        self.context = GLX.glXCreateContext(self.xdisplay, xvinfo, None, True)
 
-        # 1. Generate a framebuffer object(FBO) and target texture
-        self.FBO = glGenFramebuffers(1)
-        self.texture_color = generateColorTexture(width, height)
+        configs = GLX.glXChooseFBConfig(self.xdisplay, 0, None, byref(c_int()))
+        self.pbuffer = GLX.glXCreatePbuffer(self.xdisplay, configs[0],
+                                            cAttrs([GLX.GLX_PBUFFER_HEIGHT, height,
+                                                    GLX.GLX_PBUFFER_WIDTH,  width]))
 
-        # 2. Setup the FBO
-        glBindFramebuffer(GL_FRAMEBUFFER, self.FBO)         # bind it to the pipeline to make it active
+        if(not GLX.glXMakeContextCurrent(self.xdisplay, self.pbuffer, self.pbuffer, self.context)):
+            raise RuntimeError("Failed to make GL context current!")
+        glViewport(0, 0, width, height)
+        print "GL context created!"
 
-        # 2a. bind textures to pipeline
-        attachment_index_color_texture = 0                  # bookeeping
-        glFramebufferTexture(GL_FRAMEBUFFER,
-                             GL_COLOR_ATTACHMENT0 + attachment_index_color_texture,
-                             self.texture_color,
-                             0)                             # the mipmap level.
-        self.drawbuffer.append(GL_COLOR_ATTACHMENT0 + attachment_index_color_texture)    # bookeeping
+    def __call__(self):
+        if(not GLX.glXMakeContextCurrent(self.xdisplay, self.pbuffer, self.pbuffer, self.context)):
+            raise RuntimeError("Failed to make GL context current!")
 
-        # 3. Check for FBO completeness
-        if glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE:
-                raise RuntimeError( "Error! FrameBuffer is not complete")
-        # 4. Done & de-activate it
-        glBindFramebuffer(GL_FRAMEBUFFER, 0)
+    def __del__(self):
+        GLX.glXMakeContextCurrent(self.xdisplay, 0, 0, None)
+        GLX.glXDestroyContext(self.xdisplay, self.context)
+        self.xlib.XCloseDisplay(self.xdisplay)
+        print "GL context destroyed!"
 
 
+
+
+#%%
+from tools import *
+from OpenGL.GL import *
+from OpenGL.GL import shaders
+from OpenGL.arrays.vbo import VBO
+import numpy as np
 class PlaneSweeper():
-    def __init__(self, height, width, max_images = 10):
+    GLContext = None
+    def __init__(self, height, width, max_images = 10, offscreen = True):
+        if offscreen:
+            self.GLContext = OffScreenGL(width, height)
+
         """ 1.Calculate NDC/Texture mapping matrix"""
         xmin,xmax,ymin,ymax = 0.0, width-1.0, 0.0, height-1.0
+        if offscreen:
+            # flip image up-side down
+            mapNDC = np.array([[2/(xmin-xmax),   0, 1-2*xmin/(xmin-xmax)],
+                               [0,   2/(ymax-ymin), -1-2*ymin/(ymax-ymin)]])
+        else:
+            mapNDC = np.array([[2/(xmin-xmax),   0, 1-2*xmin/(xmin-xmax)],
+                               [0,   2/(ymin-ymax), 1-2*ymin/(ymin-ymax)]])
 
-        mapNDC = np.array([[2/(xmin-xmax),   0, 1-2*xmin/(xmin-xmax)],
-                           [0,   2/(ymin-ymax), 1-2*ymin/(ymin-ymax)]])
 
         mapTEX = np.array([[1/(xmax-xmin),   0, -xmin/(xmax-xmin)],
                            [0,   1/(ymax-ymin), -ymin/(ymax-ymin)]])
@@ -154,7 +190,7 @@ class PlaneSweeper():
             Rs = [ K.dot(G[:3,:3]).dot(invK) for G in cGr]
             ts = [ K.dot(G[:3,3])            for G in cGr]
             #Ms = np.vstack([ R+vec(t).dot(np.array([[0,0,idepth]]))  for R,t in zip(Rs,ts)])
-
+#            self.GLContext()
             glUseProgram(shader)
             glUniformMatrix3fv(unif["R"], N, GL_TRUE, np.vstack(Rs).astype('f')) # location,count,transpose,*value
             glUniform3fv(unif["t"], N, np.vstack(ts).astype('f'))
@@ -163,7 +199,8 @@ class PlaneSweeper():
         self.setCurImagePos = setCurImagePos
 
         def setTargetDepth(idepth):
-            glProgramUniform1f(shader, unif["idepth"], idepth.astype('f'))
+#            self.GLContext()
+            glProgramUniform1f(shader, unif["idepth"], float(idepth))
         self.setTargetDepth = setTargetDepth
 
         # set sampler in pos 0
@@ -187,6 +224,7 @@ class PlaneSweeper():
                 raise RuntimeError("image must be uint8")
             if image.shape != (height,width):
                 raise RuntimeError("image size not matched")
+#            self.GLContext()
             with color_vbo:
                 color_vbo.set_array(image)
                 color_vbo.copy_data()           # send data to gpu
@@ -240,6 +278,7 @@ class PlaneSweeper():
 
             imsize = width*height
             imcnt = len(images)
+
             glBindTexture(GL_TEXTURE_2D_ARRAY, im_cur_tex)
             # create pbo
             pbo = glGenBuffers(1)
@@ -266,7 +305,6 @@ class PlaneSweeper():
             glDeleteBuffers(1, [pbo])
             self.isCurSetted = True
         self.setCurImagePBO = setCurImagePBO
-
         self.__im_cur_tex = im_cur_tex
 
         """ 7.Create VAO configuration Macro """
@@ -309,6 +347,8 @@ class PlaneSweeper():
                 glUseProgram(0)
         self.draw = draw
 
+        """ 9. Readout the result/pixel"""
+        @timing
         def getResult(res = np.empty((height,width),'f')):
             glReadPixels(0,  0,              # window coordinates of the first pixel
                          width,height,       # dimensions of the pixel rectangle
@@ -318,6 +358,25 @@ class PlaneSweeper():
             return res
         self.getResult = getResult
 
+        """ 10.All-in-one API Function"""
+        @timing
+        def process(ref_im, cur_ims, cGr, K, idepths):
+            if not self.GLContext is None:
+                self.GLContext()
+
+            self.setRefImage(ref_im)
+            self.setCurImage(cur_ims)
+            self.setCurImagePos(cGr, K)
+
+            idepths = np.atleast_1d(idepths)
+            res = np.empty((len(idepths), height, width),'f')
+            for i,idp in enumerate(idepths):
+                self.setTargetDepth(idp)
+                self.draw()
+                self.getResult(res[i]);
+            return res
+        self.process = process
+
     def __delete__(self):
         glUseProgram(0)
 
@@ -326,6 +385,15 @@ class PlaneSweeper():
         glDeleteTextures(self.__im_cur_tex)
         glDeleteVertexArrays(self.__vao)
         glDeleteProgram(self.__shader)
+        if not self.GLContext is None:
+            del self.GLContext
+
+def testOffscreen():
+    cGr = [inv(G).dot(wGc[0]) for G in wGc]
+    sweep = PlaneSweeper(h,w)
+    res = sweep.process(frames[0],frames[1:],cGr[1:], K, np.linspace(iD(2.0),iD(5),50))
+    return IndexTracker(res)
+
 
 class GLWidget(QtOpenGL.QGLWidget):
     def __init__(self, parent=None):
@@ -337,7 +405,7 @@ class GLWidget(QtOpenGL.QGLWidget):
     def initializeGL(self):
         self.qglClearColor(QtGui.QColor(0, 0,  0))
         cGr = [inv(G).dot(wGc[0]) for G in wGc]
-        self.sweeper = PlaneSweeper(h,w)
+        self.sweeper = PlaneSweeper(h,w, offscreen=False)
         self.sweeper.setRefImage(frames[0])
         self.sweeper.setCurImagePBO(frames[1:])
         self.sweeper.setCurImagePos(cGr[1:], K)
