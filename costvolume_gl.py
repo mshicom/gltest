@@ -41,16 +41,19 @@ class OffScreenGL:
     def __init__(self, width, height):
         """ lets setup are opengl settings and create the context for our window """
         def cAttrs(aList):
-            aList += [0]
+            aList += [0,0]
             return (c_int * len(aList))(*aList)
 
         xvinfo = GLX.glXChooseVisual(self.xdisplay,
                                      self.display.get_default_screen(),
-                                     cAttrs([GLX.GLX_RGBA,          1,
+                                     cAttrs([GLX.GLX_RGBA,
+                                             GLX.GLX_DOUBLEBUFFER,
+                                             GLX.GLX_DEPTH_SIZE,    24,
 #                                             GLX.GLX_RED_SIZE,      1,
 #                                             GLX.GLX_GREEN_SIZE,    1,
 #                                             GLX.GLX_BLUE_SIZE,     1,
-                                             GLX.GLX_DOUBLEBUFFER,  0]))
+
+                                             ]))
         self.context = GLX.glXCreateContext(self.xdisplay, xvinfo, None, True)
 
         configs = GLX.glXChooseFBConfig(self.xdisplay, 0, None, byref(c_int()))
@@ -89,18 +92,16 @@ class PlaneSweeper():
             self.GLContext = OffScreenGL(width, height)
 
         """ 1.Calculate NDC/Texture mapping matrix"""
-        xmin,xmax,ymin,ymax = 0.0, width-1.0, 0.0, height-1.0
         if offscreen:
             # flip image up-side down
-            mapNDC = np.array([[2/(xmin-xmax),   0, 1-2*xmin/(xmin-xmax)],
-                               [0,   2/(ymax-ymin), -1-2*ymin/(ymax-ymin)]])
+            mapNDC = np.array([[2.0/width,   0, -1],
+                               [0,   2.0/height, -1]])
         else:
-            mapNDC = np.array([[2/(xmin-xmax),   0, 1-2*xmin/(xmin-xmax)],
-                               [0,   2/(ymin-ymax), 1-2*ymin/(ymin-ymax)]])
+            mapNDC = np.array([[2.0/width,   0, -1],
+                               [0,  -2.0/height, 1]])
 
-
-        mapTEX = np.array([[1/(xmax-xmin),   0, -xmin/(xmax-xmin)],
-                           [0,   1/(ymax-ymin), -ymin/(ymax-ymin)]])
+        mapTEX = np.array([[1.0/width,   0, 0],
+                           [0,   1.0/height, 0]])
 
         """ 2.Create and compile shader code"""
         vsrc = """#version 130
@@ -112,7 +113,7 @@ class PlaneSweeper():
             uniform int im_cnt;
             uniform sampler2DArray im_cur;
             uniform float idepth;
-            out float c;
+            out lowp float c;
 
             const float width = %(width)d-1, height = %(height)d-1;
             bool isInImage(vec2 p)
@@ -128,20 +129,22 @@ class PlaneSweeper():
 
             void main(void)
             {
-                float err_sum = 0;
+                lowp float err_sum = 0;
                 int valid_cnt = 0;
                 int i;
                 for(i=0; i<im_cnt; ++i)
                 {
-                    mat3 H = R[i];
+                    highp mat3 H = R[i];
                     H[2] += t[i]*idepth;
 
-                    vec3 p_cur = H*vec3(p_ref, 1);
-                    vec2 tc = p_cur.xy / p_cur.z;
+                    highp vec3 p_cur = H*vec3(p_ref, 1);
+                    highp vec2 tc = p_cur.xy / p_cur.z;
                     bool isValid = isInImage(tc);
+                    lowp float value = texture(im_cur, vec3(toTEX(tc), i)).r;
+
                     if(isValid) {
                         ++valid_cnt;
-                        err_sum += abs( pcolor-texture(im_cur, vec3(toTEX(tc), i)).r );
+                        err_sum += abs( pcolor-value );
                     }
                  }
 
@@ -208,7 +211,7 @@ class PlaneSweeper():
         glUniform1i(glGetUniformLocation(shader, "im_cur"), 0)
         glUseProgram(0)
 
-        """ 4.Create constant vbo for p_ref"""
+        """ 4.Create constant vbo for p_ref, used in step 7"""
         y, x = np.mgrid[0:height, 0:width]
         P = np.vstack([x.ravel(), y.ravel()]).T
         P = np.ascontiguousarray(P, 'f')
@@ -218,7 +221,7 @@ class PlaneSweeper():
         """ 5.Create mutable vbo for reference pixel data """
         ref_im = np.ones((height,width), 'uint8')
         color_vbo = VBO(ref_im, GL_STATIC_DRAW, GL_ARRAY_BUFFER)
-        self.isRefSetted = False
+        self.isRefSetted = True
         def setRefImage(image):
             if image.dtype != np.uint8:
                 raise RuntimeError("image must be uint8")
@@ -392,7 +395,7 @@ def testOffscreen():
     cGr = [inv(G).dot(wGc[0]) for G in wGc]
     sweep = PlaneSweeper(h,w)
     res = sweep.process(frames[0],frames[1:],cGr[1:], K, np.linspace(iD(2.0),iD(5),50))
-    return IndexTracker(res)
+    return res
 
 
 class GLWidget(QtOpenGL.QGLWidget):
@@ -459,14 +462,18 @@ class MainWindow(QtGui.QMainWindow):
         QtGui.qApp.quit()
 
 if __name__ == "__main__":
-    app_created = False
-    app = QtCore.QCoreApplication.instance()
-    if app is None:
-        app = QtGui.QApplication(sys.argv)
-        app_created = True
-    app.references = set()
-    window = MainWindow()
-    app.references.add(window)
-    window.show()
-    if app_created:
-        app.exec_()
+    if 0:
+        res = testOffscreen()
+        IndexTracker(res)
+    else:
+        app_created = False
+        app = QtCore.QCoreApplication.instance()
+        if app is None:
+            app = QtGui.QApplication(sys.argv)
+            app_created = True
+        app.references = set()
+        window = MainWindow()
+        app.references.add(window)
+        window.show()
+        if app_created:
+            app.exec_()
