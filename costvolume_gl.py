@@ -17,9 +17,9 @@ import matplotlib.pyplot as plt
 import scipy.io
 from tools import *
 #%%
-frames, wGc, K, Z = loaddata1()
-#from orb_kfs import  loaddata4
-#frames, wGc, K, Z = loaddata4(60)
+#frames, wGc, K, Z = loaddata1()
+from orb_kfs import  loaddata4
+frames, wGc, K, Z = loaddata4(10)
 h,w = frames[0].shape[:2]
 fx,fy,cx,cy = K[0,0],K[1,1],K[0,2],K[1,2]
 
@@ -39,6 +39,7 @@ class OffScreenGL:
     display = Xlib.display.Display()
 
     def __init__(self, width, height):
+        assert(self.xdisplay)
         """ lets setup are opengl settings and create the context for our window """
         def cAttrs(aList):
             aList += [0,0]
@@ -73,7 +74,6 @@ class OffScreenGL:
     def __del__(self):
         GLX.glXMakeContextCurrent(self.xdisplay, 0, 0, None)
         GLX.glXDestroyContext(self.xdisplay, self.context)
-        self.xlib.XCloseDisplay(self.xdisplay)
         print "GL context destroyed!"
 
 
@@ -172,6 +172,7 @@ class PlaneSweeper():
             """,GL_FRAGMENT_SHADER)
         shader = shaders.compileProgram(vertex,fragment)
         self.__shader = shader
+        glUseProgram(shader)
 
         """ 3.Extract parameter locations"""
         attr = {"p_ref" : glGetAttribLocation(shader, "p_ref"),
@@ -180,36 +181,8 @@ class PlaneSweeper():
                 "t"     : glGetUniformLocation(shader, "t"),
                 "im_cnt": glGetUniformLocation(shader, "im_cnt"),
                 "idepth": glGetUniformLocation(shader, "idepth")}
-
-        def setCurImagePos(cGr, K):
-            if isinstance(cGr,np.ndarray):
-                cGr = [cGr]
-            N = len(cGr)
-            if N>max_images:
-                raise RuntimeWarning("Too many matrix")
-                cGr = cGr[:max_images]
-
-            invK = inv(K)
-            Rs = [ K.dot(G[:3,:3]).dot(invK) for G in cGr]
-            ts = [ K.dot(G[:3,3])            for G in cGr]
-            #Ms = np.vstack([ R+vec(t).dot(np.array([[0,0,idepth]]))  for R,t in zip(Rs,ts)])
-#            self.GLContext()
-            glUseProgram(shader)
-            glUniformMatrix3fv(unif["R"], N, GL_TRUE, np.vstack(Rs).astype('f')) # location,count,transpose,*value
-            glUniform3fv(unif["t"], N, np.vstack(ts).astype('f'))
-            glUniform1i(unif["im_cnt"], N)
-            glUseProgram(0)
-        self.setCurImagePos = setCurImagePos
-
-        def setTargetDepth(idepth):
-#            self.GLContext()
-            glProgramUniform1f(shader, unif["idepth"], float(idepth))
-        self.setTargetDepth = setTargetDepth
-
         # set sampler in pos 0
-        glUseProgram(shader)
         glUniform1i(glGetUniformLocation(shader, "im_cur"), 0)
-        glUseProgram(0)
 
         """ 4.Create constant vbo for p_ref, used in step 7"""
         y, x = np.mgrid[0:height, 0:width]
@@ -221,8 +194,9 @@ class PlaneSweeper():
         """ 5.Create mutable vbo for reference pixel data """
         ref_im = np.ones((height,width), 'uint8')
         color_vbo = VBO(ref_im, GL_STATIC_DRAW, GL_ARRAY_BUFFER)
-        self.isRefSetted = True
-        def setRefImage(image):
+        self.isRefSetted = False
+        self.K, self.wGr = None,None
+        def setRefImage(image, K, wGr):
             if image.dtype != np.uint8:
                 raise RuntimeError("image must be uint8")
             if image.shape != (height,width):
@@ -231,7 +205,8 @@ class PlaneSweeper():
             with color_vbo:
                 color_vbo.set_array(image)
                 color_vbo.copy_data()           # send data to gpu
-                self.isRefSetted = True
+            self.isRefSetted = True
+            self.K, self.wGr = K, wGr
         self.setRefImage = setRefImage
         self.__color_vbo = color_vbo
 
@@ -255,6 +230,8 @@ class PlaneSweeper():
             if len(images) > max_images:
                 raise RuntimeWarning("More than 10 images")
                 images = images[:max_images]
+            glUseProgram(shader)
+
 #            glActiveTexture(GL_TEXTURE0)
             glBindTexture(GL_TEXTURE_2D_ARRAY, im_cur_tex)
             for layer,image in enumerate(images):
@@ -269,6 +246,8 @@ class PlaneSweeper():
                              GL_UNSIGNED_BYTE,  # data type of the pixel data, i.e GL_UNSIGNED_BYTE, GL_FLOAT ...
                              image)             # data pointer
             glBindTexture(GL_TEXTURE_2D_ARRAY, 0)
+            glUseProgram(0)
+
             self.isCurSetted = True
         self.setCurImage = setCurImage
         @timing
@@ -281,7 +260,7 @@ class PlaneSweeper():
 
             imsize = width*height
             imcnt = len(images)
-
+            glUseProgram(shader)
             glBindTexture(GL_TEXTURE_2D_ARRAY, im_cur_tex)
             # create pbo
             pbo = glGenBuffers(1)
@@ -306,9 +285,31 @@ class PlaneSweeper():
                              None)             # data pointer
             glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0)
             glDeleteBuffers(1, [pbo])
+            glUseProgram(0)
             self.isCurSetted = True
         self.setCurImagePBO = setCurImagePBO
         self.__im_cur_tex = im_cur_tex
+
+        def setCurImagePos(wGc):
+            if isinstance(wGc,np.ndarray):
+                wGc = [wGc]
+            N = len(wGc)
+            if N>max_images:
+                raise RuntimeWarning("Too many matrix")
+                wGc = wGc[:max_images]
+            cGr = [inv(G).dot(self.wGr) for G in wGc]
+            invK = inv(self.K)
+            Rs = [ self.K.dot(G[:3,:3]).dot(invK) for G in cGr]
+            ts = [ self.K.dot(G[:3,3])            for G in cGr]
+            #Ms = np.vstack([ R+vec(t).dot(np.array([[0,0,idepth]]))  for R,t in zip(Rs,ts)])
+#            self.GLContext()
+            glUseProgram(shader)
+            glUniformMatrix3fv(unif["R"], N, GL_TRUE, np.vstack(Rs).astype('f')) # location,count,transpose,*value
+            glUniform3fv(unif["t"], N, np.vstack(ts).astype('f'))
+            glUniform1i(unif["im_cnt"], N)
+            glUseProgram(0)
+        self.setCurImagePos = setCurImagePos
+        self.setTargetDepth = lambda idepth: glProgramUniform1f(shader, unif["idepth"], float(idepth))
 
         """ 7.Create VAO configuration Macro """
         vao = glGenVertexArrays(1)
@@ -363,28 +364,27 @@ class PlaneSweeper():
 
         """ 10.All-in-one API Function"""
         @timing
-        def process(ref_im, cur_ims, cGr, K, idepths):
+        def process(ref_im, wGr, cur_ims, wGc, K, idepths):
             if not self.GLContext is None:
                 self.GLContext()
-
-            self.setRefImage(ref_im)
+            glUseProgram(shader)
+            self.setRefImage(ref_im, K, wGr)
             self.setCurImage(cur_ims)
-            self.setCurImagePos(cGr, K)
+            self.setCurImagePos(wGc)
 
             idepths = np.atleast_1d(idepths)
             res = np.empty((len(idepths), height, width),'f')
             for i,idp in enumerate(idepths):
                 self.setTargetDepth(idp)
                 self.draw()
-                self.getResult(res[i]);
+                self.getResult(res[i])
+            glUseProgram(0)
             return res
         self.process = process
+        glUseProgram(0)
 
     def __delete__(self):
         glUseProgram(0)
-
-        self.__p_ref_vbo.delete()
-        self.__color_vbo.delete()
         glDeleteTextures(self.__im_cur_tex)
         glDeleteVertexArrays(self.__vao)
         glDeleteProgram(self.__shader)
@@ -392,9 +392,8 @@ class PlaneSweeper():
             del self.GLContext
 
 def testOffscreen():
-    cGr = [inv(G).dot(wGc[0]) for G in wGc]
     sweep = PlaneSweeper(h,w)
-    res = sweep.process(frames[0],frames[1:],cGr[1:], K, np.linspace(iD(2.0),iD(5),50))
+    res = sweep.process(frames[0],wGc[0],frames[1:], wGc[1:], K, np.linspace(iD(0.1),iD(6),50))
     return res
 
 
@@ -407,11 +406,10 @@ class GLWidget(QtOpenGL.QGLWidget):
 
     def initializeGL(self):
         self.qglClearColor(QtGui.QColor(0, 0,  0))
-        cGr = [inv(G).dot(wGc[0]) for G in wGc]
         self.sweeper = PlaneSweeper(h,w, offscreen=False)
-        self.sweeper.setRefImage(frames[0])
+        self.sweeper.setRefImage(frames[0], K, wGc[0])
         self.sweeper.setCurImagePBO(frames[1:])
-        self.sweeper.setCurImagePos(cGr[1:], K)
+        self.sweeper.setCurImagePos(wGc[1:])
 
         glViewport(0, 0, 640, 480)
 
