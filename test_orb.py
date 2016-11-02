@@ -444,10 +444,10 @@ def searchEPL(px, py, imr, imc, cGr, K, dmin=0, dmax=1e6, win_width=4, keepErr=F
 
 
 if __name__ == "__main__":
-#    frames, wGc, K, Zs = loaddata1()
+    frames, wGc, K, Zs = loaddata1()
 #    frames, wGc, K, Zs = loaddata2()
-    from orb_kfs import loaddata4
-    frames, wGc, K = loaddata4(10)
+#    from orb_kfs import loaddata4
+#    frames, wGc, K, Z = loaddata4(10)
 #    EpilineDrawer(frames[0:], wGc[0:], K)
     h,w = frames[0].shape[:2]
     fx,fy,cx,cy = K[0,0],K[1,1],K[0,2],K[1,2]
@@ -508,11 +508,30 @@ if __name__ == "__main__":
         plotxyzrgb(f0.makePC(1.0/ds[level_ba], conditions(vm, ds[level_ba]>iD(5), ds[level_ba]<iD(0.1))))
         plt.waitforbuttonpress()
 #%%
+    from costvolume_gl import PlaneSweeper
+
+    def InterplatedMinimum(Cost, d_list):
+        dsize = Cost[0].shape
+        Steps = len(Cost[:])
+        xg, yg = np.mgrid[0:dsize[0], 0:dsize[1]]
+
+        min_idx = np.argmin(Cost, axis=0)
+        min_value = Cost[min_idx, xg, yg]
+        min_value_plus1 = Cost[np.minimum(min_idx+1, Steps-1), xg, yg]
+        min_value_minus1 = Cost[np.maximum(min_idx-1, 0), xg, yg]
+        grad = (min_value_plus1 - min_value_minus1)/2.0
+        grad2 = min_value_plus1 + min_value_minus1 - 2*min_value
+        nz_mask = grad2!=0
+
+        base = np.zeros_like(min_idx, dtype=np.float)
+        base[nz_mask] = min_idx[nz_mask] - grad[nz_mask]/grad2[nz_mask]
+
+        return scipy.interp(base, np.arange(0, Steps), d_list), min_value
 
     class CostVolume:
-        def __init__(self, ref_image, wGc, camera_matrix, dmin, dmax, dlayers=32, dense=True):
+        def __init__(self, ref_image_u8, wGc, camera_matrix, dmin, dmax, dlayers=32, dense=True):
 
-            ref_image = ref_image.astype(np.float32)
+            ref_image = ref_image_u8.astype(np.float32)
             self.depth_min, self.depth_max, self.depth_layers = dmin, dmax, dlayers
             self.depth_list = np.linspace(dmin, dmax, dlayers)
 
@@ -540,7 +559,6 @@ if __name__ == "__main__":
             self.P = backproject(self.px, self.py, camera_matrix)
             self.cost_volume = np.zeros((dlayers,)+self.ref_image.shape, dtype=np.float32)
             self.hit_volume  = np.ones_like(self.cost_volume, dtype=np.int16)
-
 
         def UpdateCost(self, I, wGc, plot=False):
 
@@ -596,6 +614,89 @@ if __name__ == "__main__":
             P = np.vstack([p3d, I]).T
             return P[np.where(valid_mask)[0],:] if not valid_mask is None else P     # Nx6
 
+
+        def Denoise(self, Lambda=0.02, epsilon=0.1, beta=1e-3, theta_init=100, theta_end=1e-3, imageWidget=None):
+            im_shape = self.ref_image.shape
+            theta = theta_init
+
+            d_list = self.depth_list
+            d,_ = InterplatedMinimum(self.cost_volume, d_list)
+            a = d.copy()
+            Cost = self.cost_volume
+            Eaus = np.empty_like(self.cost_volume)
+            q = np.zeros((2,)+im_shape)  # dual
+
+            L, sigma, tau = MakeLinearOperator(im_shape)
+    #        L = makeMCKernal((480,640))
+    #        tau = 1.0/np.array(np.abs(L).sum(axis=0)).ravel()
+    #        sigma = 1.0/np.array(np.abs(L).sum(axis=1)).ravel()
+    #        tau[np.isnan(tau)] = 0
+    #        sigma[np.isnan(sigma)] = 0
+    #        sigma = 0.7
+    #        tau = 0.7
+            n = 1
+
+            #imageWidget.show()
+            fig2 = plt.figure('opt')
+            fig2.clf()
+            fig2.hold(False)
+            ax3 = fig2.add_subplot(211)
+            ax4 = fig2.add_subplot(212)
+            img = ax3.imshow(d, cmap='jet')
+            pts, = np.round(plt.ginput(1, timeout=-1)).astype(np.int)
+            x,y = pts[0], pts[1]
+
+            ax3.plot(x, y, '*')
+            vla =ax4.axvline(a[y, x], color='b', linestyle='--')        # show a
+            vld =ax4.axvline(d[y, x], color='r', linestyle='--')        # show d
+            #hld =ax4.axhline(1, color='r', linestyle='--')        # show d
+            l1, =ax4.plot(d_list, Eaus[:, y, x], 'b--')
+            l2, =ax4.plot(d_list, Cost[:, y, x], 'r-*')
+            ax4.relim()
+            ax4.set_ylim(bottom=0, top=1.5)
+            ax4.autoscale_view()
+
+            while theta > theta_end:
+                d = d.ravel()
+                # 1. Fix a, calculate semi-implicit gradient ascent on dual variable p
+                q.flat = (q.flat+sigma*(L*d))/(1.0+epsilon*sigma)
+                normp = np.abs(q) if q.shape[0]==1 else np.sqrt(q[0]**2+q[1]**2)
+                reproject = np.maximum(1, normp)
+                q /= reproject   # reprojection
+
+                # 2. gradient descent on the primal variable
+                d = d + tau*(a.ravel()/theta - L.T*q.ravel())
+                d = d/(1.0+tau/theta)
+                d.shape = im_shape
+
+                # 3. Fix d, search optimal a
+                for i in xrange(self.depth_layers):
+                    Eaus[i] = Lambda*Cost[i] + 0.5/theta*(d-d_list[i])**2
+                a, c = InterplatedMinimum(Eaus, d_list)
+
+                theta = theta*(1.0-beta*n)
+
+                img.set_data(d)
+                vla.set_xdata(a[y, x])
+                vld.set_xdata(d[y, x])
+               # hld.set_ydata(0.5/theta*(d[y, x]-a[y, x])**2)
+                l1.set_ydata(Eaus[:, y, x])
+
+                fig2.canvas.draw()
+                fig2.canvas.flush_events()
+
+#                gradx,grady = np.gradient(d)
+#                normgrad = np.sqrt(gradx**2 + grady**2)
+#                print "{0}: {1} \t {2}".format(n, normgrad.sum(), c.sum())
+                n += 1
+                #imageWidget.imshow(d)
+
+            return d
+
+        def IdxToDepth(self, d):
+            Slope = (self.depth_max - self.depth_min)/self.depth_layers
+            return d*Slope+self.depth_min
+
     def PlotPixelCost(cv):
         fig2,(ax3,ax4) = plt.subplots(2,1,num='PlotPixelCost')
         ax3.imshow(cv.ref_image, cmap='gray')
@@ -623,26 +724,33 @@ if __name__ == "__main__":
 
     refid = 0
     Iref, G0 = frames[refid], wGc[refid]
-    cv = CostVolume(Iref, G0, K, 0.2, 4.0, 32, False)
+    cv = CostVolume(Iref, G0, K, 1.2, 5.0, 32, True)
     fig1,(ax1,ax2) = plt.subplots(2,1,num='cost')
     ax1.imshow(Iref, cmap='gray')
 #    if cv.dense:
 #        pts = np.asarray(plt.ginput(1, timeout=-1)[0], dtype=np.int)
 
-    for i, Icur in enumerate(frames):
-        if i == refid:
-            continue
-        print 'frame {0}'.format(i)
-        costupdate, hit = cv.UpdateCost(Icur, wGc[i], 0)
-#        plt.figure('cost')
-#        ax2.plot(cv.depth_list, costupdate[:, pts[1], pts[0]]/hit[:, pts[1], pts[0]], '-*')
-        plt.pause(0.001)
+    if 1:
+        GPUSweeper = PlaneSweeper(h,w)
+        cv.cost_volume = GPUSweeper.process(Iref, G0, frames[1:], wGc[1:], K, 1.0/cv.depth_list)
 
+    else:
+
+        for i, Icur in enumerate(frames):
+            if i == refid:
+                continue
+            print 'frame {0}'.format(i)
+            costupdate, hit = cv.UpdateCost(Icur, wGc[i], 0)
+    #        plt.figure('cost')
+    #        ax2.plot(cv.depth_list, costupdate[:, pts[1], pts[0]]/hit[:, pts[1], pts[0]], '-*')
+            plt.pause(0.001)
+
+    df = cv.Denoise(Lambda=0.5, beta=1e-3)
     d = cv.GetCostMinimum()
 #    dv = np.full_like(Iref, np.nan)
 #    dv[cv.py,cv.px] = d #d[f0.py,f0.px]
 #    ax1.imshow(dv,'jet')
-    plotxyzrgb(cv.makePC(d.ravel()))
+    plotxyzrgb(cv.makePC(df.ravel()))
 #    PlotPixelCost(cv)
 
 

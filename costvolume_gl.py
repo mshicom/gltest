@@ -16,12 +16,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import scipy.io
 from tools import *
-#%%
-#frames, wGc, K, Z = loaddata1()
-from orb_kfs import  loaddata4
-frames, wGc, K, Z = loaddata4(10)
-h,w = frames[0].shape[:2]
-fx,fy,cx,cy = K[0,0],K[1,1],K[0,2],K[1,2]
+
 
 #%%
 from OpenGL.GL import *
@@ -241,7 +236,7 @@ class PlaneSweeper():
                     raise RuntimeError("image size not matched")
                 glTexSubImage3D(GL_TEXTURE_2D_ARRAY,    # target,
                              0,0,0,layer,                   # mid map level, x/y/z-offset
-                             w, h, 1,               # width, height,layers
+                             width, height, 1,               # width, height,layers
                              GL_RED,            # format of the pixel data, i.e. GL_RED, GL_RG, GL_RGB,
                              GL_UNSIGNED_BYTE,  # data type of the pixel data, i.e GL_UNSIGNED_BYTE, GL_FLOAT ...
                              image)             # data pointer
@@ -391,75 +386,83 @@ class PlaneSweeper():
         if not self.GLContext is None:
             del self.GLContext
 
-def testOffscreen():
-    sweep = PlaneSweeper(h,w)
-    res = sweep.process(frames[0],wGc[0],frames[1:], wGc[1:], K, np.linspace(iD(0.1),iD(6),50))
-    return res
-
-
-class GLWidget(QtOpenGL.QGLWidget):
-    def __init__(self, parent=None):
-        self.parent = parent
-        QtOpenGL.QGLWidget.__init__(self, parent)
-
-        self.d = 2.0
-
-    def initializeGL(self):
-        self.qglClearColor(QtGui.QColor(0, 0,  0))
-        self.sweeper = PlaneSweeper(h,w, offscreen=False)
-        self.sweeper.setRefImage(frames[0], K, wGc[0])
-        self.sweeper.setCurImagePBO(frames[1:])
-        self.sweeper.setCurImagePos(wGc[1:])
-
-        glViewport(0, 0, 640, 480)
-
-    def resizeGL(self, width, height):
-        if height == 0: height = 1
-        glViewport(0, 0, width, height)
-
-    def paintGL(self):
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-
-        self.sweeper.setTargetDepth(1/self.d)
-        self.sweeper.draw()
-
-    def wheelEvent(self, e):
-        # QtGui.QWheelEvent(e)
-        """ zoom in """
-        sign = np.sign(e.delta())
-        if self.d < 1:
-            inc = 0.02*sign
-        else:
-            inc = 0.2*sign
-
-        self.d = np.clip(self.d+inc, 0.01, 8.0)
-        print self.d
-        self.updateGL()
-
-class MainWindow(QtGui.QMainWindow):
-
-    def __init__(self):
-        QtGui.QMainWindow.__init__(self)
-
-        self.resize(w, h)
-        self.setWindowTitle('GL Cube Test')
-
-        self.initActions()
-
-        self.glWidget = GLWidget(self)
-
-        self.setCentralWidget(self.glWidget)
-
-    def initActions(self):
-        self.exitAction = QtGui.QAction('Quit', self)
-        self.exitAction.setShortcut('Ctrl+Q')
-        self.exitAction.setStatusTip('Exit application')
-        self.connect(self.exitAction, QtCore.SIGNAL('triggered()'), self.close)
-
-    def close(self):
-        QtGui.qApp.quit()
-
 if __name__ == "__main__":
+    #%%
+    frames, wGc, K, Z = loaddata1()
+#    from orb_kfs import  loaddata4
+#    frames, wGc, K, Z = loaddata4(10)
+    h,w = frames[0].shape[:2]
+    fx,fy,cx,cy = K[0,0],K[1,1],K[0,2],K[1,2]
+
+    def testOffscreen():
+        sweep = PlaneSweeper(h,w)
+        res = sweep.process(frames[0],wGc[0],frames[1:], wGc[1:], K, np.linspace(iD(0.1),iD(6),50))
+        return res
+
+
+    class GLWidget(QtOpenGL.QGLWidget):
+        def __init__(self, parent=None):
+            self.parent = parent
+            QtOpenGL.QGLWidget.__init__(self, parent)
+
+            self.d = 2.0
+
+        def initializeGL(self):
+            self.qglClearColor(QtGui.QColor(0, 0,  0))
+            self.sweeper = PlaneSweeper(h,w, offscreen=False)
+            self.sweeper.setRefImage(frames[0], K, wGc[0])
+            self.sweeper.setCurImagePBO(frames[1:])
+            self.sweeper.setCurImagePos(wGc[1:])
+
+            glViewport(0, 0, 640, 480)
+
+        def resizeGL(self, width, height):
+            if height == 0: height = 1
+            glViewport(0, 0, width, height)
+
+        def paintGL(self):
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+
+            self.sweeper.setTargetDepth(1/self.d)
+            self.sweeper.draw()
+
+        def wheelEvent(self, e):
+            # QtGui.QWheelEvent(e)
+            """ zoom in """
+            sign = np.sign(e.delta())
+            if self.d < 1:
+                inc = 0.02*sign
+            else:
+                inc = 0.2*sign
+
+            self.d = np.clip(self.d+inc, 0.01, 8.0)
+            print self.d
+            self.updateGL()
+
+    class MainWindow(QtGui.QMainWindow):
+
+        def __init__(self):
+            QtGui.QMainWindow.__init__(self)
+
+            self.resize(w, h)
+            self.setWindowTitle('GL Cube Test')
+
+            self.initActions()
+
+            self.glWidget = GLWidget(self)
+
+            self.setCentralWidget(self.glWidget)
+
+        def initActions(self):
+            self.exitAction = QtGui.QAction('Quit', self)
+            self.exitAction.setShortcut('Ctrl+Q')
+            self.exitAction.setStatusTip('Exit application')
+            self.connect(self.exitAction, QtCore.SIGNAL('triggered()'), self.close)
+
+        def close(self):
+            QtGui.qApp.quit()
+
+
     if 0:
         res = testOffscreen()
         IndexTracker(res)

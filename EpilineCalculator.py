@@ -411,7 +411,7 @@ def sampleEpl(xr,yr, imr, imc, cGr, K, out_minmax=False):
 if __name__ == "__main__":
 #    frames, wGc, K, _ = loaddata1()
     from orb_kfs import loaddata4
-    frames, wGc, K = loaddata4(10)
+    frames, wGc, K, Z = loaddata4(10)
 
     xr,yr = 715,438
     e = EpilineDrawer(frames, wGc, K, (xr,yr))
