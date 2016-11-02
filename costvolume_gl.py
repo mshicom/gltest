@@ -101,11 +101,11 @@ class PlaneSweeper():
         """ 2.Create and compile shader code"""
         vsrc = """#version 130
             in vec2 p_ref;        // [x, y]
-            in float pcolor;
 
             uniform mat3 R[%(max_images)d];
             uniform vec3 t[%(max_images)d];
             uniform int im_cnt;
+            uniform sampler2D im_ref;
             uniform sampler2DArray im_cur;
             uniform float idepth;
             out lowp float c;
@@ -122,8 +122,31 @@ class PlaneSweeper():
             vec2 toTEX(vec2 p)
             {   return mapTEX*vec3(p,1); }    // map from [0:h,0:w] to [0:1,0:1]
 
+            vec2 dxy_local(vec3 Pe0, vec2 Pr) // Pe0 = K*Trc
+            {
+                vec2 res = -Pe0.z*Pr.xy+Pe0.xy;
+                return res/length(res);
+            }
+            vec2 dxy(mat3 KRcrK_, vec3 KTcr, vec2 Pr, float dinv)
+            {
+                vec3 Pinf = KRcrK_*vec3(Pr,1);
+                vec3 Pe = KTcr;
+                vec2 dxy_raw = (-Pe.z/Pinf.z)*Pinf.xy+Pe.xy;
+                float dxy_norm = length(dxy_raw);
+                vec2 dxy = dxy_raw/dxy_norm;
+
+                float denom = 1/(Pinf.z+dinv*Pe.z);
+                float v = dinv*denom*dxy_norm;
+                float x = (Pinf.x+dinv*Pe.x)*denom;
+                float y = (Pinf.y+dinv*Pe.y)*denom;
+
+                return vec2(x,y);
+            }
+
             void main(void)
             {
+                float pcolor = texture2D(im_ref, toTEX(p_ref)).r;
+
                 lowp float err_sum = 0;
                 int valid_cnt = 0;
                 int i;
@@ -178,6 +201,7 @@ class PlaneSweeper():
                 "idepth": glGetUniformLocation(shader, "idepth")}
         # set sampler in pos 0
         glUniform1i(glGetUniformLocation(shader, "im_cur"), 0)
+        glUniform1i(glGetUniformLocation(shader, "im_ref"), 1)
 
         """ 4.Create constant vbo for p_ref, used in step 7"""
         y, x = np.mgrid[0:height, 0:width]
@@ -186,28 +210,47 @@ class PlaneSweeper():
         p_ref_vbo = VBO(P, GL_STATIC_DRAW, GL_ARRAY_BUFFER)
         self.__p_ref_vbo = p_ref_vbo
 
-        """ 5.Create mutable vbo for reference pixel data """
-        ref_im = np.ones((height,width), 'uint8')
-        color_vbo = VBO(ref_im, GL_STATIC_DRAW, GL_ARRAY_BUFFER)
+        """ 5.Create texture for reference pixel data """
+        im_ref_tex = glGenTextures(1)
+        glActiveTexture(GL_TEXTURE1)
+        glBindTexture(GL_TEXTURE_2D, im_ref_tex)
+        glTexImage2D(GL_TEXTURE_2D,     # target
+                         0,                 # mid map level
+                         GL_RED,            # number of color components in the texture
+                         width, height,     # width, height
+                         0,                 # border(must be 0)
+                         GL_RED,            # format of the pixel data, i.e. GL_RED, GL_RG, GL_RGB,
+                         GL_UNSIGNED_BYTE,  # data type of the pixel data, i.e GL_UNSIGNED_BYTE, GL_FLOAT ...
+                         None)              # data pointer
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+        glBindTexture(GL_TEXTURE_2D, 0)
+
         self.isRefSetted = False
-        self.K, self.wGr = None,None
         def setRefImage(image, K, wGr):
             if image.dtype != np.uint8:
                 raise RuntimeError("image must be uint8")
             if image.shape != (height,width):
                 raise RuntimeError("image size not matched")
-#            self.GLContext()
-            with color_vbo:
-                color_vbo.set_array(image)
-                color_vbo.copy_data()           # send data to gpu
+            glActiveTexture(GL_TEXTURE1)
+            glBindTexture(GL_TEXTURE_2D, im_ref_tex)
+            glTexImage2D(GL_TEXTURE_2D,     # target
+                         0,                 # mid map level
+                         GL_RED,            # number of color components in the texture
+                         width, height,     # width, height
+                         0,                 # border(must be 0)
+                         GL_RED,            # format of the pixel data, i.e. GL_RED, GL_RG, GL_RGB,
+                         GL_UNSIGNED_BYTE,  # data type of the pixel data, i.e GL_UNSIGNED_BYTE, GL_FLOAT ...
+                         image)             # data pointer
+            glBindTexture(GL_TEXTURE_2D, 0)
             self.isRefSetted = True
             self.K, self.wGr = K, wGr
         self.setRefImage = setRefImage
-        self.__color_vbo = color_vbo
+        self.__im_ref_tex = im_ref_tex
 
         """ 6.Create texture array for cur image"""
         im_cur_tex = glGenTextures(1)
-#        glActiveTexture(GL_TEXTURE0)
+        glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_2D_ARRAY, im_cur_tex)
         glTexStorage3D(GL_TEXTURE_2D_ARRAY,
                        1,             # mip map levels
@@ -226,8 +269,7 @@ class PlaneSweeper():
                 raise RuntimeWarning("More than 10 images")
                 images = images[:max_images]
             glUseProgram(shader)
-
-#            glActiveTexture(GL_TEXTURE0)
+            glActiveTexture(GL_TEXTURE0)
             glBindTexture(GL_TEXTURE_2D_ARRAY, im_cur_tex)
             for layer,image in enumerate(images):
                 if image.dtype != np.uint8:
@@ -317,16 +359,6 @@ class PlaneSweeper():
                                   0,                # stride, byte offset between consecutive vertex attributes
                                   p_ref_vbo)        # *pointer
             glEnableVertexAttribArray(attr["p_ref"])
-
-        if attr["color"]!= -1:
-            with color_vbo:
-                glVertexAttribPointer(attr["color"],
-                                      1,
-                                      GL_UNSIGNED_BYTE,
-                                      GL_TRUE,          # convert them to float when loaded in shader
-                                      0,
-                                      color_vbo)
-                glEnableVertexAttribArray(attr["color"])
         glBindVertexArray(0)
         self.__vao = vao
 
@@ -338,8 +370,11 @@ class PlaneSweeper():
 
                 glActiveTexture(GL_TEXTURE0)
                 glBindTexture(GL_TEXTURE_2D_ARRAY, im_cur_tex)
+                glActiveTexture(GL_TEXTURE1)
+                glBindTexture(GL_TEXTURE_2D, im_ref_tex)
+
                 glBindVertexArray(vao)
-                with p_ref_vbo,color_vbo: # auto vbo bind
+                with p_ref_vbo: # auto vbo bind
                     glDrawArrays(GL_POINTS, 0, height*width)    # mode,first,count
 
                 glBindVertexArray(0)
@@ -381,6 +416,7 @@ class PlaneSweeper():
     def __delete__(self):
         glUseProgram(0)
         glDeleteTextures(self.__im_cur_tex)
+        glDeleteTextures(self.__im_ref_tex)
         glDeleteVertexArrays(self.__vao)
         glDeleteProgram(self.__shader)
         if not self.GLContext is None:
@@ -478,3 +514,16 @@ if __name__ == "__main__":
         window.show()
         if app_created:
             app.exec_()
+#%%
+
+#    sweep = PlaneSweeper(h,w)
+#    res = sweep.process(frames[0],wGc[0],frames[1:], wGc[1:], K, np.linspace(iD(0.1),iD(6),50))
+#
+#    fig,(a1,a2) = plt.subplots(2,1,num='slice')
+#    a1.imshow(frames[0])
+#    l, = a2.plot([])
+#    while 1:
+#        p = np.array(plt.ginput(1,-1)[0],np.int)
+#        a1.plot(p[0],p[1],'r.')
+#        a2.plot(range(50),res[:,p[0],p[1]])
+#        plt.pause(0.001)
