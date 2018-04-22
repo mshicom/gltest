@@ -6,12 +6,12 @@ Created on Wed May 25 17:36:17 2016
 @author: kaihong
 """
 import sys
-from PyQt4 import QtCore,QtGui,QtOpenGL
+from PyQt5 import QtCore,QtGui,QtOpenGL,QtWidgets
 from OpenGL import GLU
 from OpenGL.GL import *
 from OpenGL.GL import shaders
 from OpenGL.arrays.vbo import VBO
-from OpenGLContext.quaternion import  fromEuler
+#from OpenGLContext.quaternion import  fromEuler
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy.io
@@ -30,7 +30,7 @@ class OffScreenGL:
     xlib = cdll.LoadLibrary('libX11.so')
     xlib.XOpenDisplay.argtypes = [c_char_p]
     xlib.XOpenDisplay.restype = POINTER(struct__XDisplay)
-    xdisplay = xlib.XOpenDisplay("")
+    xdisplay = xlib.XOpenDisplay(b'')
     display = Xlib.display.Display()
 
     def __init__(self, width, height):
@@ -60,7 +60,7 @@ class OffScreenGL:
         if(not GLX.glXMakeContextCurrent(self.xdisplay, self.pbuffer, self.pbuffer, self.context)):
             raise RuntimeError("Failed to make GL context current!")
         glViewport(0, 0, width, height)
-        print "GL context created!"
+        print("GL context created!")
 
     def __call__(self):
         if(not GLX.glXMakeContextCurrent(self.xdisplay, self.pbuffer, self.pbuffer, self.context)):
@@ -69,7 +69,7 @@ class OffScreenGL:
     def __del__(self):
         GLX.glXMakeContextCurrent(self.xdisplay, 0, 0, None)
         GLX.glXDestroyContext(self.xdisplay, self.context)
-        print "GL context destroyed!"
+        print("GL context destroyed!")
 
 
 
@@ -465,20 +465,20 @@ if __name__ == "__main__":
         def wheelEvent(self, e):
             # QtGui.QWheelEvent(e)
             """ zoom in """
-            sign = np.sign(e.delta())
+            sign = np.sign(e.angleDelta().y())
             if self.d < 1:
                 inc = 0.02*sign
             else:
                 inc = 0.2*sign
 
             self.d = np.clip(self.d+inc, 0.01, 8.0)
-            print self.d
+            print( self.d)
             self.updateGL()
 
-    class MainWindow(QtGui.QMainWindow):
+    class MainWindow(QtWidgets.QMainWindow):
 
         def __init__(self):
-            QtGui.QMainWindow.__init__(self)
+            QtWidgets.QMainWindow.__init__(self)
 
             self.resize(w, h)
             self.setWindowTitle('GL Cube Test')
@@ -490,13 +490,13 @@ if __name__ == "__main__":
             self.setCentralWidget(self.glWidget)
 
         def initActions(self):
-            self.exitAction = QtGui.QAction('Quit', self)
+            self.exitAction = QtWidgets.QAction('Quit', self)
             self.exitAction.setShortcut('Ctrl+Q')
             self.exitAction.setStatusTip('Exit application')
-            self.connect(self.exitAction, QtCore.SIGNAL('triggered()'), self.close)
-
+            self.exitAction.triggered.connect(self.close)
+            
         def close(self):
-            QtGui.qApp.quit()
+            QtWidgets.qApp.quit()
 
 
     if 0:
@@ -506,7 +506,7 @@ if __name__ == "__main__":
         app_created = False
         app = QtCore.QCoreApplication.instance()
         if app is None:
-            app = QtGui.QApplication(sys.argv)
+            app = QtWidgets.QApplication(sys.argv)
             app_created = True
         app.references = set()
         window = MainWindow()

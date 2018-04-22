@@ -18,7 +18,7 @@ def sim(*arg,**kwarg):
 
 def loaddata1():
     try:
-        data = scipy.io.loadmat('/home/nubot/data/workspace/gltes/data.mat')
+        data = scipy.io.loadmat('/home/nubot/work/workspace/gltes/data.mat')
     except:
         data = scipy.io.loadmat('/home/kaihong/workspace/gltes/data.mat')
     frames, = data['I']
@@ -84,7 +84,7 @@ def timing(f):
         ts = time()
         result = f(*args, **kw)
         te = time()
-        print 'func:%r took: %2.6f sec' % (f.__name__, te-ts)
+        print('func:%r took: %2.6f sec' % (f.__name__, te-ts))
         return result
     return wrap
 
